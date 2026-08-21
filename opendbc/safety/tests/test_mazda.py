@@ -12,7 +12,9 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
   TX_MSGS = [[0x243, 0], [0x09d, 0], [0x440, 0]]
   STANDSTILL_THRESHOLD = .1
   RELAY_MALFUNCTION_ADDRS = {0: (0x243, 0x440)}
-  FWD_BLACKLISTED_ADDRS = {2: [0x243, 0x440]}
+  # default state (disengaged): the fwd hook forwards everything, including
+  # the stock camera's 0x243 and 0x440; test_stock_passthrough covers engaged
+  FWD_BLACKLISTED_ADDRS = {2: []}
 
   MAX_RATE_UP = 10
   MAX_RATE_DOWN = 25
@@ -25,6 +27,9 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
 
   # Mazda actually does not set any bit when requesting torque
   NO_STEER_REQ_BIT = True
+
+  # while disengaged our 0x243 yields to the forwarded stock camera frames
+  DISENGAGED_IDLE_STEER_TX = False
 
   def setUp(self):
     self.packer = CANPackerSafety("mazda_2017")
@@ -69,6 +74,10 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
     }
     return self.packer.make_can_msg_safety("CRZ_BTNS", 0, values)
 
+  def _hud_msg(self):
+    values = {"LANE_LINES": 2}
+    return self.packer.make_can_msg_safety("CAM_LANEINFO", 0, values)
+
   def test_buttons(self):
     # only cancel allows while controls not allowed
     self.safety.set_controls_allowed(0)
@@ -79,6 +88,21 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
     self.safety.set_controls_allowed(1)
     self.assertTrue(self._tx(self._button_msg(cancel=True)))
     self.assertTrue(self._tx(self._button_msg(resume=True)))
+
+  def test_stock_passthrough(self):
+    # disengaged: the stock camera's frames reach the car, ours are dropped
+    self.safety.set_controls_allowed(0)
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x243))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x440))
+    self.assertFalse(self._tx(self._torque_cmd_msg(0)))
+    self.assertFalse(self._tx(self._hud_msg()))
+
+    # engaged: ours flow, the camera's are blocked
+    self.safety.set_controls_allowed(1)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x243))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x440))
+    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
+    self.assertTrue(self._tx(self._hud_msg()))
 
 
 class TestMazdaIgnition(unittest.TestCase):

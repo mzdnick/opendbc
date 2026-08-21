@@ -78,13 +78,38 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
         tx = false;
       }
     }
+
+    // while the stock camera's frames are forwarded (openpilot not controlling),
+    // ours must stay off the bus
+    if (((msg->addr == MAZDA_LKAS) || (msg->addr == MAZDA_LKAS_HUD)) && !controls_allowed) {
+      tx = false;
+    }
   }
 
   return tx;
 }
 
+// The stock camera's LKAS correction (0x243) and HUD frame (0x440) reach the
+// car whenever openpilot isn't controlling, so the stock lane-keep behavior
+// and dash lane-departure display stay live while disengaged.
+static bool mazda_fwd_hook(int bus_num, int addr) {
+  bool block_msg = false;
+
+  if (bus_num == MAZDA_CAM) {
+    if ((addr == MAZDA_LKAS) || (addr == MAZDA_LKAS_HUD)) {
+      block_msg = controls_allowed;
+    }
+  }
+
+  return block_msg;
+}
+
 static safety_config mazda_init(uint16_t param) {
-  static const CanMsg MAZDA_TX_MSGS[] = {{MAZDA_LKAS, 0, 8, .check_relay = true}, {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false}, {MAZDA_LKAS_HUD, 0, 8, .check_relay = true}};
+  static const CanMsg MAZDA_TX_MSGS[] = {
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
+    {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
+  };
 
   static RxCheck mazda_rx_checks[] = {
     {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
@@ -102,4 +127,5 @@ const safety_hooks mazda_hooks = {
   .init = mazda_init,
   .rx = mazda_rx_hook,
   .tx = mazda_tx_hook,
+  .fwd = mazda_fwd_hook,
 };

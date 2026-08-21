@@ -286,8 +286,6 @@ class TorqueSteeringSafetyTestBase(SafetyTestBase, abc.ABC):
         for t in range(int(-max_torque * 1.5), int(max_torque * 1.5)):
           self.safety.set_controls_allowed(enabled)
           self._set_prev_torque(t)
-          # modes that forward the stock steering message while disengaged drop
-          # our idle frames instead (see mazda_fwd_hook)
           if abs(t) > max_torque or (not enabled and (abs(t) > 0 or not self.DISENGAGED_IDLE_STEER_TX)):
             self.assertFalse(self._tx(self._torque_cmd_msg(t)))
           else:

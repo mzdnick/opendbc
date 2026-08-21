@@ -73,8 +73,7 @@ def create_alert_command(packer, cam_msg: dict, steer_required: bool):
     "NO_ERR_BIT",
     "S1",
     "S1_HBEAM",
-    # the stock camera's departure warnings reach the dash while engaged too,
-    # like VW relays LDW_SW_Warnung through its replacement HUD message
+    # while engaged the camera's own 0x440 is blocked, so its warn bits ride ours
     "LDW_WARN_LL",
     "LDW_WARN_RL",
   ]}

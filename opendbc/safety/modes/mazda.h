@@ -89,9 +89,8 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
-// The stock camera's LKAS correction (0x243) and HUD frame (0x440) reach the
-// car whenever openpilot isn't controlling, so the stock lane-keep behavior
-// and dash lane-departure display stay live while disengaged.
+// The stock camera's LKAS (0x243) and HUD (0x440) frames reach the car while
+// openpilot isn't controlling, keeping stock lane keep and dash LDW live.
 static bool mazda_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 

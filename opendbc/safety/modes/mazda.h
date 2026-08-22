@@ -175,7 +175,7 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // must stay off bus while the stock camera's frames are being relayed
+  // stay off the bus while the stock camera's frames are being relayed
   if (main_bus && ((msg->addr == MAZDA_LKAS) || (msg->addr == MAZDA_LKAS_HUD)) &&
       !(controls_allowed || controls_allowed_lateral)) {
     tx = false;

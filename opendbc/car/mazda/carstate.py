@@ -41,6 +41,7 @@ class CarState(CarStateBase, CarStateExt):
     self.cam_laneinfo_seen = False
     self.cam_laneinfo_raw = 0
     self.cam_laneinfo_ts = 0
+    self.cam_lkas_raw = None
     self.fsc_settled_frames = 0
     # the body ECU has taken the standstill hold over and is holding the brakes itself
     self.brake_hold = False
@@ -213,7 +214,12 @@ class CarState(CarStateBase, CarStateExt):
     # camera signals
     self.cam_lkas = cp_cam.vl["CAM_LKAS"]
     self.cam_laneinfo = cp_cam.vl["CAM_LANEINFO"]
-    # exact frame bytes + arrival time: the HUD relay must carry bits the DBC doesn't describe
+    # exact frame bytes: both relays must carry bits the DBC doesn't describe
+    if cp_cam.ts_nanos["CAM_LKAS"]["CTR"] > 0:
+      lkas_raw = cp_cam.vl["CAM_LKAS"]
+      self.cam_lkas_raw = (int(lkas_raw["FRAME_RAW_HI"]) << 32) | int(lkas_raw["FRAME_RAW_LO"])
+    else:
+      self.cam_lkas_raw = None
     laneinfo = cp_cam.vl["CAM_LANEINFO"]
     self.cam_laneinfo_raw = (int(laneinfo["FRAME_RAW_HI"]) << 32) | int(laneinfo["FRAME_RAW_LO"])
     self.cam_laneinfo_ts = cp_cam.ts_nanos["CAM_LANEINFO"]["FRAME_RAW_HI"]

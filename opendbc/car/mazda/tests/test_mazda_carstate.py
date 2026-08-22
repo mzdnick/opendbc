@@ -99,6 +99,15 @@ class TestCamRelaySources:
     for k, v in values.items():
       assert CI.CS.cam_lkas[k] == v
     assert CI.CS.out.steerFaultPermanent
+    assert CI.CS.cam_lkas_raw is not None
+
+  def test_cam_lkas_raw_carries_undefined_bits(self):
+    # byte 2's bits 1,2,4,5,6 and byte 3's low five bits carry no DBC signal
+    payload = bytes([0x35, 0xC7, 0xF6, 0x3B, 0xA8, 0x51, 0x7E, 0x42])
+    CI = _interface()
+    for i in range(2):
+      CI.update([(int(i * DT_CTRL * 1e9), [(CAM_LKAS, payload, 2)])])
+    assert CI.CS.cam_lkas_raw == int.from_bytes(payload, "big")
 
   def test_steer_fault_follows_the_err_bit(self):
     CI = _interface()

@@ -11,7 +11,6 @@ from opendbc.car.mazda.values import CarControllerParams, Buttons
 
 from opendbc.sunnypilot.car.mazda.icbm import IntelligentCruiseButtonManagementInterface
 
-VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 # Synthetic radar frames go to the car and to the camera; the panda only forwards
@@ -20,8 +19,6 @@ LONG_BUSES = (0, 2)
 
 # a quiet camera longer than this drops the HUD relay to the 2 Hz hold on the last frame
 LANEINFO_STALE_FRAMES = int(1.0 / DT_CTRL)
-
-
 class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterface):
   def __init__(self, dbc_names, CP, CP_SP):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
@@ -79,17 +76,12 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
 
     # relay the camera's HUD frame the moment a new one lands, at the camera's own cadence;
-    # once the camera has been quiet past the stale window, hold the last frame at 2 Hz
-    steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
-    # TODO: find a way to silence audible warnings so we can add more hud alerts
-    steer_required = steer_required and CS.lkas_allowed_speed
+    # once the camera has been quiet past the stale window, hold the last frame at 2 Hz.
+    # the camera's own hands warning passes through untouched in both states
     cam_ts = CS.cam_laneinfo_ts
     new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
     if new_frame or (self.laneinfo_age_frames > LANEINFO_STALE_FRAMES and self.frame % 50 == 0):
-      # not steering: the camera's own hands warning passes through untouched
-      hands = bool(steer_required) if CC.latActive else None
-      cam_raw = CS.cam_laneinfo_raw if cam_ts > 0 else None
-      can_sends.append(mazdacan.create_laneinfo_relay(cam_raw, hands))
+      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw if cam_ts > 0 else None))
       self.last_laneinfo_ts = cam_ts
     self.laneinfo_age_frames = 0 if new_frame else self.laneinfo_age_frames + 1
 
@@ -99,7 +91,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.last_lat_active = CC.latActive
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
                                                       self.frame + self.ctr_offset,
-                                                      apply_torque, CS.cam_lkas))
+                                                      apply_torque, CS.cam_lkas, CS.cam_lkas_raw))
 
     # Intelligent Cruise Button Management
     # Suppress ICBM CRZ_BTNS spam while cancel/resume are in flight or while the driver is

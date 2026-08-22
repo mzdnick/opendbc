@@ -186,6 +186,79 @@ class TestMazdaLongitudinalMessages:
     assert dat[5:] == mazdacan.LEAD_TRACK_TEMPLATE[5:]
 
 
+class TestSteeringOverlay:
+  """The engaged 0x243 overlays the camera's exact frame: torque, counter and angle bits
+  are ours; every other bit, defined or not, is the camera's."""
+
+  LKAS = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1,
+          "STEERING_ANGLE": 0, "ANGLE_ENABLED": 0}
+  # bits no DBC signal describes, per byte
+  UNDEFINED = {2: 0x76, 3: 0x9F, 4: 0xFC, 6: 0x2F}
+
+  @pytest.fixture
+  def packer(self):
+    return CANPacker("mazda_2017")
+
+  @classmethod
+  def _steer(cls, packer, ctr=0, torque=0, lkas=None, cam_raw=None):
+    class FakeCP:
+      flags = MazdaFlags.GEN1
+    return mazdacan.create_steering_control(packer, FakeCP(), ctr, torque,
+                                            dict(cls.LKAS if lkas is None else lkas), cam_raw)[1]
+
+  def test_overlay_matches_curated_on_a_defined_camera_frame(self, packer):
+    # a camera frame carrying no undefined bits: the overlay must reproduce the curated
+    # build byte for byte, checksum included
+    cam = self._steer(packer, ctr=5, torque=-200)
+    overlay = self._steer(packer, ctr=9, torque=300, cam_raw=int.from_bytes(cam, "big"))
+    assert overlay == self._steer(packer, ctr=9, torque=300)
+
+  def test_undefined_bits_ride_through(self, packer):
+    cam = bytearray(self._steer(packer, ctr=5, torque=-200))
+    for i, mask in self.UNDEFINED.items():
+      cam[i] |= mask
+    overlay = self._steer(packer, ctr=9, torque=300, cam_raw=int.from_bytes(cam, "big"))
+    for i, mask in self.UNDEFINED.items():
+      assert overlay[i] & mask == cam[i] & mask
+    # the camera's defined bits we do not own also survive (LDW, LNV, ERR bits, BIT_1)
+    parser = CANParser("mazda_2017", [("CAM_LKAS", 0)], 0)
+    parser.update([(0, [(0x243, overlay, 0)])])
+    vl = parser.vl["CAM_LKAS"]
+    for k in ("BIT_1", "ERR_BIT_2", "LDW", "LINE_NOT_VISIBLE"):
+      assert vl[k] == self.LKAS[k]
+    assert vl["CTR"] == 9
+    assert vl["LKAS_REQUEST"] == 300
+
+  def test_camera_angle_bits_replaced_with_ours(self, packer):
+    # a camera frame carrying a nonzero angle and enable: the overlay swaps in our
+    # zero-angle pattern and the checksum delta pays for the removal, so the result is
+    # the curated build byte for byte (the curated path never writes the camera's angle)
+    vals = {"CTR": 5, "LKAS_REQUEST": -200, "STEERING_ANGLE": -300, "ANGLE_ENABLED": 1,
+            "LDW": 1, "LINE_NOT_VISIBLE": 1, "BIT_1": 1, "ERR_BIT_2": 1}
+    angled = bytearray(packer.make_can_msg("CAM_LKAS", 0, dict(vals, CHKSUM=0))[1])
+    tmp = -200 + 2048
+    angled[7] = (249 - 5 - (tmp >> 8) - (tmp & 0xFF) - (1 << 3) - (1 << 7) - (1 << 4) - (1 << 5)
+                 - mazdacan._angle_checksum_terms(-300, 1)) % 256
+    overlay = self._steer(packer, ctr=9, torque=300, cam_raw=int.from_bytes(angled, "big"),
+                          lkas=dict(self.LKAS, STEERING_ANGLE=-300, ANGLE_ENABLED=1))
+    assert overlay == self._steer(packer, ctr=9, torque=300)
+
+  def test_write_masks_match_the_packer(self, packer):
+    # flipping every owned field (counter, torque, angle, enable) may only flip bits
+    # inside the write masks; bytes 2 and 3 must never move
+    base = self._steer(packer, ctr=0, torque=0)
+    variants = (
+      self._steer(packer, ctr=10, torque=900),
+      self._steer(packer, ctr=0, torque=0, lkas=dict(self.LKAS, STEERING_ANGLE=-300, ANGLE_ENABLED=1)),
+    )
+    for other in variants:
+      assert other[2] == base[2] and other[3] == base[3]
+      for i in range(7):
+        diff = base[i] ^ other[i]
+        assert diff & mazdacan.LKAS_WRITE_MASKS.get(i, 0) == diff, \
+          f"byte {i}: packer flipped bits outside the write mask"
+
+
 class TestLaneinfoRelay:
   """CAM_LANEINFO relay: the camera's frame reaches the dash byte for byte, and only the
   hands-warn bits are ours."""
@@ -302,7 +375,7 @@ class TestRelayEmission:
             packer.make_can_msg("CAM_LANEINFO", 2, self.CAM_LANEINFO_VALUES)]
     for i in range(2):
       ci.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
-    return msgs[1][1]
+    return msgs[0][1], msgs[1][1]
 
   @staticmethod
   def _control(enabled=False, lat_active=False, torque=0.0, steer_required=False):
@@ -327,7 +400,7 @@ class TestRelayEmission:
     return parser.vl[name]
 
   def test_disengaged_emission_and_relay(self, ci):
-    cam_dat = self._feed_camera(ci)
+    _, cam_dat = self._feed_camera(ci)
     CC = self._control()
     steer_frames = 0
     steer_at = {}
@@ -357,32 +430,36 @@ class TestRelayEmission:
       assert dat == cam_dat
 
   def test_engaged_emission_and_relay(self, ci):
-    cam_dat = self._feed_camera(ci)
-    CC = self._control(enabled=True, lat_active=True, torque=0.1, steer_required=True)
+    cam_lkas_dat, cam_dat = self._feed_camera(ci)
+    CC = self._control(enabled=True, lat_active=True, torque=0.1)
     steer_at = {}
+    steer_dat = {}
     hud_at = {}
     for i in range(250):
       _, sends = self._apply(ci, i, CC)
       if any(a == 0x243 for a, _, _ in sends):
         steer_at[i] = self._decode(sends, 0x243)
+        steer_dat[i] = next(d for a, d, b in sends if a == 0x243)
       if any(a == 0x440 for a, _, _ in sends):
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
 
-    # hands warnings on, every other bit exactly the camera's
-    expected = bytearray(cam_dat)
-    expected[6] |= mazdacan.HANDS_WARN_B6
-    expected[7] |= mazdacan.HANDS_WARN_B7
+    # the HUD frame is exactly the camera's, its hands warning included
     assert sorted(hud_at) == [0, 150, 200]
     for dat in hud_at.values():
-      assert dat == bytes(expected)
+      assert dat == cam_dat
 
-    # the counter continues the camera's sequence (camera CTR 5 -> ours starts at 6) and
-    # torque flows once lateral is active
+    # the steering frame overlays the camera's: the counter continues the camera's
+    # sequence (camera CTR 5 -> ours starts at 6), torque flows, and every bit outside
+    # the write masks stays the camera's own -- LDW included
     assert [steer_at[i]["CTR"] for i in range(6)] == [6, 7, 8, 9, 10, 11]
     assert steer_at[100]["LKAS_REQUEST"] > 0
     for k, v in self.CAM_LKAS_VALUES.items():
       if k != "CTR":
         assert steer_at[100][k] == v
+    out = steer_dat[100]
+    assert out[2] == cam_lkas_dat[2] and out[3] == cam_lkas_dat[3]
+    for i, mask in mazdacan.LKAS_WRITE_MASKS.items():
+      assert out[i] & (0xFF ^ mask) == cam_lkas_dat[i] & (0xFF ^ mask)
 
   def test_new_camera_frame_relays_immediately(self, ci):
     self._feed_camera(ci)
@@ -420,9 +497,9 @@ class TestRelayEmission:
       _, sends = self._apply(ci, i, CC)
       if any(a == 0x440 for a, _, _ in sends):
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
-    # nothing from the camera: only the stale hold fires, zeros under our hands bits
+    # nothing from the camera: only the stale hold fires, and it is plain zeros
     assert sorted(hud_at) == [150]
-    assert hud_at[150] == bytes([0, 0, 0, 0, 0, 0, mazdacan.HANDS_WARN_B6, mazdacan.HANDS_WARN_B7])
+    assert hud_at[150] == bytes(8)
 
 
 class TestStandstillHold:

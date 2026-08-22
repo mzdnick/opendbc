@@ -80,8 +80,9 @@ class TestFscSettleGate:
 
 
 class TestCamRelaySources:
-  """CS.cam_lkas and CS.cam_laneinfo are the relay sources: the controller echoes them into
-  its own 0x243 and 0x440 frames, so the camera's values must survive the decode."""
+  """CS.cam_lkas (decoded bits) and CS.cam_lkas_raw / CS.cam_laneinfo_raw (exact frame
+  bytes) are the relay sources: the controller overlays its steering command onto the
+  camera's 0x243 bytes and re-sends the 0x440 bytes verbatim."""
 
   @staticmethod
   def _feed_cam(CI, addr, values, frames=2):
@@ -113,14 +114,6 @@ class TestCamRelaySources:
     CI = _interface()
     self._feed_cam(CI, CAM_LKAS, {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1})
     assert not CI.CS.out.steerFaultPermanent
-
-  def test_cam_laneinfo_decodes_the_camera_signals(self):
-    values = {"LANE_LINES": 2, "LDW_WARN_LL": 1, "LDW_WARN_RL": 0, "TJA": 3,
-              "TJA_TRANSITION": 1, "S1": 1, "S1_HBEAM": 1}
-    CI = _interface()
-    self._feed_cam(CI, CAM_LANEINFO, values)
-    for k, v in values.items():
-      assert CI.CS.cam_laneinfo[k] == v
 
   def test_cam_laneinfo_raw_carries_undefined_bits(self):
     # bytes 2 and 5 carry no DBC signal at all, but the dash reads bits there

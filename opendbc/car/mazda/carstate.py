@@ -111,6 +111,8 @@ class CarState(CarStateBase, CarStateExt):
     else:
       self.lkas_allowed_speed = True
 
+    laneinfo = cp_cam.vl["CAM_LANEINFO"]
+
     if self.CP.openpilotLongitudinalControl:
       # The radar teardown silences the radar-owned CRZ_CTRL frame, so cruise state comes
       # from PEDALS: ACC_OFF means MRCC is armed but idle, ACC_ACTIVE means it is engaged.
@@ -174,7 +176,6 @@ class CarState(CarStateBase, CarStateExt):
       # timer at zero, so the radar was never silenced and the two-master guard held
       # accFaulted for the entire drive with nothing to tell the driver why.
       self.cam_laneinfo_seen |= len(cp_cam.vl_all["CAM_LANEINFO"]["LANE_LINES"]) > 0
-      laneinfo = cp_cam.vl["CAM_LANEINFO"]
       settled = self.cam_laneinfo_seen and not any(laneinfo[s] for s in ("NO_ERR_BIT", "ERR_BIT"))
       self.fsc_settled_frames = self.fsc_settled_frames + 1 if settled else 0
     else:
@@ -213,14 +214,12 @@ class CarState(CarStateBase, CarStateExt):
 
     # camera signals
     self.cam_lkas = cp_cam.vl["CAM_LKAS"]
-    self.cam_laneinfo = cp_cam.vl["CAM_LANEINFO"]
     # exact frame bytes: both relays must carry bits the DBC doesn't describe
     if cp_cam.ts_nanos["CAM_LKAS"]["CTR"] > 0:
       lkas_raw = cp_cam.vl["CAM_LKAS"]
       self.cam_lkas_raw = (int(lkas_raw["FRAME_RAW_HI"]) << 32) | int(lkas_raw["FRAME_RAW_LO"])
     else:
       self.cam_lkas_raw = None
-    laneinfo = cp_cam.vl["CAM_LANEINFO"]
     self.cam_laneinfo_raw = (int(laneinfo["FRAME_RAW_HI"]) << 32) | int(laneinfo["FRAME_RAW_LO"])
     self.cam_laneinfo_ts = cp_cam.ts_nanos["CAM_LANEINFO"]["FRAME_RAW_HI"]
     ret.steerFaultPermanent = cp_cam.vl["CAM_LKAS"]["ERR_BIT_1"] == 1

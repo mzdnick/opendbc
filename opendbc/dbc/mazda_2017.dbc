@@ -732,6 +732,10 @@ CM_ SG_ 540 RADAR_LEAD_RELATIVE_DISTANCE "stop-and-go phase: 1 cruise, 2 follow,
 CM_ SG_ 605 PED_BRAKE "3: no brake, 4: brake";
 CM_ SG_ 605 BRAKE_WARNING "Flashing brake warning and audible alert for potential forward collision";
 CM_ SG_ 579 STEERING_ANGLE "steering angle aligns with 0.022 factor and -45.06 offset";
+CM_ SG_ 579 FRAME_RAW_HI "whole-frame capture, bytes 0-3; source for the byte-exact steering relay";
+CM_ SG_ 579 FRAME_RAW_LO "whole-frame capture, bytes 4-7; source for the byte-exact steering relay";
+CM_ SG_ 1088 FRAME_RAW_HI "whole-frame capture, bytes 0-3; source for the byte-exact HUD relay";
+CM_ SG_ 1088 FRAME_RAW_LO "whole-frame capture, bytes 4-7; source for the byte-exact HUD relay";
 CM_ SG_ 863 SPEED_SIGN "displayed speed limit, unit per SPEED_SIGN_ON";
 CM_ SG_ 863 SPEED_SIGN_ON "0: no limit displayed, 1: limit displayed in MPH, 2: limit displayed in km/h";
 CM_ SG_ 863 SPEED_SIGN_CAM "1: The speed limit is recognized by the camera. 0: speed limit is map based or is not available";

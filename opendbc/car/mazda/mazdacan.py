@@ -103,7 +103,7 @@ def create_radar_frames(bus, counter, lead):
   return frames
 
 
-def create_steering_control(packer, CP, frame, apply_torque, lkas):
+def create_steering_control(packer, CP, ctr, apply_torque, lkas):
 
   tmp = apply_torque + 2048
 
@@ -113,8 +113,8 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   # copy values from camera
   b1 = int(lkas["BIT_1"])
   er1 = int(lkas["ERR_BIT_1"])
-  lnv = 0
-  ldw = 0
+  lnv = int(lkas["LINE_NOT_VISIBLE"])
+  ldw = int(lkas["LDW"])
   er2 = int(lkas["ERR_BIT_2"])
 
   # Some older models do have these, newer models don't.
@@ -128,7 +128,7 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   amd = (amd >> 4) | ((amd & 0xF) << 4)
   alo = (tmp & 0x3) << 2
 
-  ctr = frame % 16
+  ctr = ctr % 16
   # bytes:     [    1  ] [ 2 ] [             3               ]  [           4         ]
   csum = 249 - ctr - hi - lo - (lnv << 3) - er1 - (ldw << 7) - (er2 << 4) - (b1 << 5)
 
@@ -164,15 +164,27 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   return packer.make_can_msg("CAM_LKAS", 0, values)
 
 
-def create_alert_command(packer, cam_msg: dict, steer_required: bool):
-  values = dict(cam_msg)
-  values.update({
-    # TODO: what's the difference between all these? do we need to send all?
-    "HANDS_WARN_3_BITS": 0b111 if steer_required else 0,
-    "HANDS_ON_STEER_WARN": steer_required,
-    "HANDS_ON_STEER_WARN_2": steer_required,
-  })
-  return packer.make_can_msg("CAM_LANEINFO", 0, values)
+CAM_LANEINFO_ADDR = 0x440
+# Hands-warn bits the controller owns; every other bit in the frame is the camera's.
+# Byte positions match the packer mapping for this message, not naive DBC bit math.
+HANDS_WARN_B6 = 0x0E   # HANDS_WARN_3_BITS
+HANDS_WARN_B7 = 0x09   # HANDS_ON_STEER_WARN | HANDS_ON_STEER_WARN_2
+
+
+def create_laneinfo_relay(cam_raw: int | None, steer_required: bool | None):
+  # Relays the camera's frame byte for byte, so bits the DBC does not describe (all of
+  # byte 2 among them) reach the dash exactly as sent. steer_required None means we are
+  # not steering and the camera's own hands warning passes through untouched.
+  # TODO: what's the difference between all these? do we need to send all?
+  dat = bytearray(8 if cam_raw is None else cam_raw.to_bytes(8, "big"))
+  if steer_required is not None:
+    if steer_required:
+      dat[6] |= HANDS_WARN_B6
+      dat[7] |= HANDS_WARN_B7
+    else:
+      dat[6] &= 0xFF ^ HANDS_WARN_B6
+      dat[7] &= 0xFF ^ HANDS_WARN_B7
+  return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)
 
 
 def create_button_cmd(packer, CP, counter, button):

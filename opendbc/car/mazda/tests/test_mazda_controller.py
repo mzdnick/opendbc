@@ -186,69 +186,91 @@ class TestMazdaLongitudinalMessages:
     assert dat[5:] == mazdacan.LEAD_TRACK_TEMPLATE[5:]
 
 
-class TestAlertCommand:
-  """CAM_LANEINFO re-send: the camera's frame must reach the dash unchanged."""
+class TestLaneinfoRelay:
+  """CAM_LANEINFO relay: the camera's frame reaches the dash byte for byte, and only the
+  hands-warn bits are ours."""
 
   @pytest.fixture
   def packer(self):
     return CANPacker("mazda_2017")
 
   @staticmethod
-  def _cam_laneinfo(packer, cam_msg, steer_required=False):
-    _, dat, _ = mazdacan.create_alert_command(packer, dict(cam_msg), steer_required)
+  def _cam_dat(packer, values=None):
+    _, dat, _ = packer.make_can_msg("CAM_LANEINFO", 2, dict(values or {}))
+    return bytearray(dat)
+
+  def test_camera_frame_relays_byte_for_byte(self, packer):
+    # bits the DBC does not describe (all of byte 2 among them) must survive the trip
+    cam_dat = self._cam_dat(packer)
+    cam_dat[2] = 0xAB
+    cam_dat[5] = 0xCD
+    relay = mazdacan.create_laneinfo_relay(int.from_bytes(cam_dat, "big"), None)
+    assert relay.dat == bytes(cam_dat)
+    assert relay.address == 0x440 and relay.src == 0
+
+  def test_hands_override_touches_only_the_hands_bits(self, packer):
+    cam_dat = self._cam_dat(packer)
+    cam_dat[2] = 0xAB
+    raw = int.from_bytes(cam_dat, "big")
+    for steer_required in (True, False):
+      relay = mazdacan.create_laneinfo_relay(raw, steer_required)
+      assert relay.dat[:6] == bytes(cam_dat[:6])
+      b6 = (cam_dat[6] | mazdacan.HANDS_WARN_B6) if steer_required else (cam_dat[6] & (0xFF ^ mazdacan.HANDS_WARN_B6))
+      b7 = (cam_dat[7] | mazdacan.HANDS_WARN_B7) if steer_required else (cam_dat[7] & (0xFF ^ mazdacan.HANDS_WARN_B7))
+      assert relay.dat[6] == b6
+      assert relay.dat[7] == b7
+
+  def test_hands_masks_match_the_packer_mapping(self, packer):
+    # the masks must hit exactly the bits the packer assigns to the three hands signals
+    dark = self._cam_dat(packer)
+    lit = self._cam_dat(packer, {"HANDS_WARN_3_BITS": 0b111, "HANDS_ON_STEER_WARN": 1,
+                                 "HANDS_ON_STEER_WARN_2": 1})
+    diff = [(i, a ^ b) for i, (a, b) in enumerate(zip(dark, lit, strict=True)) if a != b]
+    assert diff == [(6, mazdacan.HANDS_WARN_B6), (7, mazdacan.HANDS_WARN_B7)]
+
+  def test_no_camera_frame_sends_zeros(self):
+    relay = mazdacan.create_laneinfo_relay(None, True)
+    assert relay.dat == bytes([0, 0, 0, 0, 0, 0, mazdacan.HANDS_WARN_B6, mazdacan.HANDS_WARN_B7])
+
+  def test_camera_signals_decode_back(self, packer):
+    values = {"LANE_LINES": 2, "LDW_WARN_LL": 1, "LDW_WARN_RL": 0, "TJA": 3,
+              "TJA_TRANSITION": 2, "S1": 1, "S1_HBEAM": 1, "ERR_BIT": 1}
+    cam_dat = self._cam_dat(packer, values)
+    relay = mazdacan.create_laneinfo_relay(int.from_bytes(cam_dat, "big"), None)
     parser = CANParser("mazda_2017", [("CAM_LANEINFO", 0)], 0)
-    parser.update([(0, [(0x440, dat, 0)])])
-    return parser.vl["CAM_LANEINFO"]
-
-  def test_every_camera_signal_relays(self, packer):
-    cam_msg = {s: 0 for s in ("LINE_VISIBLE", "LINE_NOT_VISIBLE", "LANE_LINES", "BIT1", "BIT2",
-                              "BIT3", "NO_ERR_BIT", "ERR_BIT", "S1", "S1_HBEAM",
-                              "LDW_WARN_LL", "LDW_WARN_RL", "TJA", "TJA_TRANSITION")}
-    cam_msg.update({"LANE_LINES": 2, "LDW_WARN_LL": 1, "LDW_WARN_RL": 0,
-                    "TJA": 3, "TJA_TRANSITION": 2, "ERR_BIT": 1})
-    vl = self._cam_laneinfo(packer, cam_msg)
-    for s in cam_msg:
-      assert vl[s] == cam_msg[s]
-
-  def test_hands_override_keeps_camera_signals(self, packer):
-    vl = self._cam_laneinfo(packer, {"S1": 1, "LANE_LINES": 2}, steer_required=False)
-    assert vl["S1"] == 1
-    assert vl["HANDS_WARN_3_BITS"] == 0
-
-    vl = self._cam_laneinfo(packer, {"S1": 1, "LANE_LINES": 2}, steer_required=True)
-    assert vl["S1"] == 1
-    assert vl["HANDS_WARN_3_BITS"] == 0b111
-    assert vl["HANDS_ON_STEER_WARN"] == 1
-    assert vl["HANDS_ON_STEER_WARN_2"] == 1
+    parser.update([(0, [(0x440, relay.dat, 0)])])
+    for k, v in values.items():
+      assert parser.vl["CAM_LANEINFO"][k] == v
 
 
 class TestSteeringCommand:
-  """CAM_LKAS re-send: the camera's health bits ride along on every steering command."""
+  """CAM_LKAS re-send: the camera's health and lane-departure bits ride along on every
+  steering command."""
 
   @pytest.fixture
   def packer(self):
     return CANPacker("mazda_2017")
 
   @staticmethod
-  def _steer_msg(packer, lkas=None, frame=0, torque=0):
+  def _steer_msg(packer, lkas=None, ctr=0, torque=0):
     class FakeCP:
       flags = MazdaFlags.GEN1
-    lkas = {"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0} if lkas is None else lkas
-    _, dat, _ = mazdacan.create_steering_control(packer, FakeCP(), frame, torque, dict(lkas))
+    lkas = {"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0, "LDW": 0, "LINE_NOT_VISIBLE": 0} if lkas is None else lkas
+    _, dat, _ = mazdacan.create_steering_control(packer, FakeCP(), ctr, torque, dict(lkas))
     parser = CANParser("mazda_2017", [("CAM_LKAS", 0)], 0)
     parser.update([(0, [(0x243, dat, 0)])])
     return parser.vl["CAM_LKAS"]
 
   def test_camera_bits_relay(self, packer):
-    lkas = {"BIT_1": 1, "ERR_BIT_1": 1, "ERR_BIT_2": 1}
+    lkas = {"BIT_1": 1, "ERR_BIT_1": 1, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1}
     vl = self._steer_msg(packer, lkas)
     for k, v in lkas.items():
       assert vl[k] == v
     assert vl["LKAS_REQUEST"] == 0
 
-  def test_counter_follows_the_frame(self, packer):
-    for frame in (0, 7, 15, 16, 33):
-      assert self._steer_msg(packer, frame=frame)["CTR"] == frame % 16
+  def test_counter_wraps_at_sixteen(self, packer):
+    for ctr in (0, 7, 15, 16, 33):
+      assert self._steer_msg(packer, ctr=ctr)["CTR"] == ctr % 16
 
   def test_torque_round_trips(self, packer):
     for torque in (0, 100, -100, 1200):
@@ -256,13 +278,14 @@ class TestSteeringCommand:
 
 
 class TestRelayEmission:
-  """Drives the real interface: the controller emits its own 0x243 every frame and its 0x440
-  re-send every 50th frame regardless of engagement, relaying the camera's decoded values.
-  The panda, not the controller, yields the bus to the camera while disengaged."""
+  """Drives the real interface: the controller emits its own 0x243 every frame regardless of
+  engagement, and relays the camera's 0x440 the moment a new camera frame lands (with a 2 Hz
+  hold on the last frame once the camera has been quiet past the stale window). The panda,
+  not the controller, yields the bus to the camera while disengaged."""
 
-  CAM_LKAS_VALUES = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1}
+  CAM_LKAS_VALUES = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 0, "CTR": 5}
   CAM_LANEINFO_VALUES = {"LANE_LINES": 2, "LDW_WARN_LL": 1, "LDW_WARN_RL": 0, "TJA": 3,
-                         "TJA_TRANSITION": 1}
+                         "TJA_TRANSITION": 1, "HANDS_WARN_3_BITS": 0b101}
 
   @pytest.fixture
   def ci(self):
@@ -279,6 +302,7 @@ class TestRelayEmission:
             packer.make_can_msg("CAM_LANEINFO", 2, self.CAM_LANEINFO_VALUES)]
     for i in range(2):
       ci.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
+    return msgs[1][1]
 
   @staticmethod
   def _control(enabled=False, lat_active=False, torque=0.0, steer_required=False):
@@ -303,61 +327,102 @@ class TestRelayEmission:
     return parser.vl[name]
 
   def test_disengaged_emission_and_relay(self, ci):
-    self._feed_camera(ci)
+    cam_dat = self._feed_camera(ci)
     CC = self._control()
     steer_frames = 0
     steer_at = {}
     hud_at = {}
-    for i in range(200):
+    for i in range(250):
       _, sends = self._apply(ci, i, CC)
       steer_frames += sum(1 for a, _, _ in sends if a == 0x243)
       if any(a == 0x243 for a, _, _ in sends):
         steer_at[i] = self._decode(sends, 0x243)
       if any(a == 0x440 for a, _, _ in sends):
-        hud_at[i] = self._decode(sends, 0x440)
+        hud_at[i] = next(d for a, d, b in sends if a == 0x440)
 
-    # 0x243 at 100 Hz with zero torque; 0x440 at 2 Hz on the frame % 50 ticks
-    assert steer_frames == 200
-    assert sorted(hud_at) == [0, 50, 100, 150]
+    # 0x243 at 100 Hz with zero torque; the HUD relay fires on the first camera frame,
+    # then only the 2 Hz hold fires while the camera stays quiet
+    assert steer_frames == 250
+    assert sorted(hud_at) == [0, 150, 200]
 
     steer_vl = steer_at[100]
     assert steer_vl["LKAS_REQUEST"] == 0
     for k, v in self.CAM_LKAS_VALUES.items():
-      assert steer_vl[k] == v
+      if k != "CTR":
+        assert steer_vl[k] == v
+    assert steer_vl["CTR"] == 100 % 16
 
-    # the camera's lane frame reaches the dash unchanged, hands warnings dark
-    for vl in hud_at.values():
-      for k, v in self.CAM_LANEINFO_VALUES.items():
-        assert vl[k] == v
-      assert vl["HANDS_WARN_3_BITS"] == 0
-      assert vl["HANDS_ON_STEER_WARN"] == 0
-      assert vl["HANDS_ON_STEER_WARN_2"] == 0
+    # the camera's HUD frame reaches the dash byte for byte, its hands warning intact
+    for dat in hud_at.values():
+      assert dat == cam_dat
 
   def test_engaged_emission_and_relay(self, ci):
-    self._feed_camera(ci)
+    cam_dat = self._feed_camera(ci)
     CC = self._control(enabled=True, lat_active=True, torque=0.1, steer_required=True)
     steer_at = {}
     hud_at = {}
-    for i in range(200):
+    for i in range(250):
       _, sends = self._apply(ci, i, CC)
       if any(a == 0x243 for a, _, _ in sends):
         steer_at[i] = self._decode(sends, 0x243)
       if any(a == 0x440 for a, _, _ in sends):
-        hud_at[i] = self._decode(sends, 0x440)
+        hud_at[i] = next(d for a, d, b in sends if a == 0x440)
 
-    assert sorted(hud_at) == [0, 50, 100, 150]
+    # hands warnings on, every other bit exactly the camera's
+    expected = bytearray(cam_dat)
+    expected[6] |= mazdacan.HANDS_WARN_B6
+    expected[7] |= mazdacan.HANDS_WARN_B7
+    assert sorted(hud_at) == [0, 150, 200]
+    for dat in hud_at.values():
+      assert dat == bytes(expected)
+
+    # the counter continues the camera's sequence (camera CTR 5 -> ours starts at 6) and
     # torque flows once lateral is active
+    assert [steer_at[i]["CTR"] for i in range(6)] == [6, 7, 8, 9, 10, 11]
     assert steer_at[100]["LKAS_REQUEST"] > 0
     for k, v in self.CAM_LKAS_VALUES.items():
-      assert steer_at[100][k] == v
+      if k != "CTR":
+        assert steer_at[100][k] == v
 
-    # hands warnings on, and the camera's departure warnings survive the override
-    for vl in hud_at.values():
-      assert vl["HANDS_WARN_3_BITS"] == 0b111
-      assert vl["HANDS_ON_STEER_WARN"] == 1
-      assert vl["HANDS_ON_STEER_WARN_2"] == 1
-      assert vl["LDW_WARN_LL"] == 1
-      assert vl["LDW_WARN_RL"] == 0
+  def test_new_camera_frame_relays_immediately(self, ci):
+    self._feed_camera(ci)
+    CC = self._control()
+    for i in range(10):
+      _, sends = self._apply(ci, i, CC)
+      if i > 0:
+        assert not any(a == 0x440 for a, _, _ in sends)
+
+    # a fresh camera frame goes out on the very cycle it arrives
+    values = dict(self.CAM_LANEINFO_VALUES, LDW_WARN_RL=1)
+    dat = CANPacker("mazda_2017").make_can_msg("CAM_LANEINFO", 2, values)[1]
+    ci.update([(int(11 * DT_CTRL * 1e9), [(0x440, dat, 2)])])
+    _, sends = self._apply(ci, 11, CC)
+    assert next(d for a, d, b in sends if a == 0x440) == dat
+
+  def test_reengage_reseeds_the_counter(self, ci):
+    self._feed_camera(ci)
+    engaged = self._control(enabled=True, lat_active=True)
+    off = self._control()
+    ctrs = []
+    for CC in (engaged, off, engaged):
+      for _ in range(5):
+        _, sends = self._apply(ci, 0, CC)
+        ctrs.append(self._decode(sends, 0x243)["CTR"])
+    # camera CTR 5: every engage edge restarts our sequence at 6
+    assert ctrs[0] == ctrs[10] == 6
+
+  def test_no_camera_frame_holds_the_zero_frame(self, ci):
+    for i in range(2):
+      ci.update([(int(i * DT_CTRL * 1e9), [])])
+    CC = self._control(enabled=True, lat_active=True, steer_required=True)
+    hud_at = {}
+    for i in range(200):
+      _, sends = self._apply(ci, i, CC)
+      if any(a == 0x440 for a, _, _ in sends):
+        hud_at[i] = next(d for a, d, b in sends if a == 0x440)
+    # nothing from the camera: only the stale hold fires, zeros under our hands bits
+    assert sorted(hud_at) == [150]
+    assert hud_at[150] == bytes([0, 0, 0, 0, 0, 0, mazdacan.HANDS_WARN_B6, mazdacan.HANDS_WARN_B7])
 
 
 class TestStandstillHold:

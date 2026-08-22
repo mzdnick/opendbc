@@ -113,6 +113,15 @@ class TestCamRelaySources:
     for k, v in values.items():
       assert CI.CS.cam_laneinfo[k] == v
 
+  def test_cam_laneinfo_raw_carries_undefined_bits(self):
+    # bytes 2 and 5 carry no DBC signal at all, but the dash reads bits there
+    payload = bytes([0x42, 0x41, 0xAB, 0x00, 0x00, 0xCD, 0x71, 0x3C])
+    CI = _interface()
+    for i in range(2):
+      CI.update([(int(i * DT_CTRL * 1e9), [(CAM_LANEINFO, payload, 2)])])
+    assert CI.CS.cam_laneinfo_raw == int.from_bytes(payload, "big")
+    assert CI.CS.cam_laneinfo_ts > 0
+
 
 class TestBrakeHold:
   """GEAR.BRAKE_HOLD is the body ECU reporting that it owns the standstill hold. Stock relaxes

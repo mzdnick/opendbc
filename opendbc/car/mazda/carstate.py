@@ -39,6 +39,8 @@ class CarState(CarStateBase, CarStateExt):
     self.radar_was_silenced = False
     self.cancel_context_frames = 0
     self.cam_laneinfo_seen = False
+    self.cam_laneinfo_raw = 0
+    self.cam_laneinfo_ts = 0
     self.fsc_settled_frames = 0
     # the body ECU has taken the standstill hold over and is holding the brakes itself
     self.brake_hold = False
@@ -211,6 +213,10 @@ class CarState(CarStateBase, CarStateExt):
     # camera signals
     self.cam_lkas = cp_cam.vl["CAM_LKAS"]
     self.cam_laneinfo = cp_cam.vl["CAM_LANEINFO"]
+    # exact frame bytes + arrival time: the HUD relay must carry bits the DBC doesn't describe
+    laneinfo = cp_cam.vl["CAM_LANEINFO"]
+    self.cam_laneinfo_raw = (int(laneinfo["FRAME_RAW_HI"]) << 32) | int(laneinfo["FRAME_RAW_LO"])
+    self.cam_laneinfo_ts = cp_cam.ts_nanos["CAM_LANEINFO"]["FRAME_RAW_HI"]
     ret.steerFaultPermanent = cp_cam.vl["CAM_LKAS"]["ERR_BIT_1"] == 1
 
     # cruise control button events: distance, inc, dec, resume, cancel, and main

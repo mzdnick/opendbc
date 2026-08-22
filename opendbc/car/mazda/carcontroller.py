@@ -38,7 +38,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.ctr_offset = 0
     self.last_lat_active = False
     self.last_laneinfo_ts = None
-    self.laneinfo_miss = 0
+    self.laneinfo_age_frames = 0
 
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
@@ -85,13 +85,13 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     steer_required = steer_required and CS.lkas_allowed_speed
     cam_ts = CS.cam_laneinfo_ts
     new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
-    if new_frame or (self.laneinfo_miss > LANEINFO_STALE_FRAMES and self.frame % 50 == 0):
+    if new_frame or (self.laneinfo_age_frames > LANEINFO_STALE_FRAMES and self.frame % 50 == 0):
       # not steering: the camera's own hands warning passes through untouched
       hands = bool(steer_required) if CC.latActive else None
       cam_raw = CS.cam_laneinfo_raw if cam_ts > 0 else None
       can_sends.append(mazdacan.create_laneinfo_relay(cam_raw, hands))
       self.last_laneinfo_ts = cam_ts
-    self.laneinfo_miss = 0 if new_frame else self.laneinfo_miss + 1
+    self.laneinfo_age_frames = 0 if new_frame else self.laneinfo_age_frames + 1
 
     # send steering command; the counter continues the camera's sequence across an engage
     if CC.latActive and not self.last_lat_active:

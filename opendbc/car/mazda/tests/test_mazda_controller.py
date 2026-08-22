@@ -188,9 +188,10 @@ class TestMazdaLongitudinalMessages:
 
 class TestSteeringOverlay:
   """The engaged 0x243 overlays the camera's exact frame: torque, counter and angle bits
-  are ours; every other bit, defined or not, is the camera's."""
+  are ours, the line-visibility bit is forced off (the EPS gates torque on it), and every
+  other bit, defined or not, is the camera's."""
 
-  LKAS = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1,
+  LKAS = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1,
           "STEERING_ANGLE": 0, "ANGLE_ENABLED": 0}
   # bits no DBC signal describes, per byte
   UNDEFINED = {2: 0x76, 3: 0x9F, 4: 0xFC, 6: 0x2F}
@@ -217,27 +218,37 @@ class TestSteeringOverlay:
     cam = bytearray(self._steer(packer, ctr=5, torque=-200))
     for i, mask in self.UNDEFINED.items():
       cam[i] |= mask
+    cam[2] |= 0x80   # the camera's LDW alert bit rides through too
     overlay = self._steer(packer, ctr=9, torque=300, cam_raw=int.from_bytes(cam, "big"))
     for i, mask in self.UNDEFINED.items():
       assert overlay[i] & mask == cam[i] & mask
-    # the camera's defined bits we do not own also survive (LDW, LNV, ERR bits, BIT_1)
     parser = CANParser("mazda_2017", [("CAM_LKAS", 0)], 0)
     parser.update([(0, [(0x243, overlay, 0)])])
     vl = parser.vl["CAM_LKAS"]
-    for k in ("BIT_1", "ERR_BIT_2", "LDW", "LINE_NOT_VISIBLE"):
-      assert vl[k] == self.LKAS[k]
+    for k in ("BIT_1", "ERR_BIT_2", "LDW"):
+      assert vl[k] == 1
     assert vl["CTR"] == 9
     assert vl["LKAS_REQUEST"] == 300
+
+  def test_line_not_visible_is_forced_off(self, packer):
+    # the EPS gates torque on the camera's visibility state (v4 on-device: openpilot
+    # could only steer while the camera saw lanes), so the overlay clears it and the
+    # checksum delta pays for the removal
+    cam = bytearray(self._steer(packer, ctr=5, torque=-200))
+    cam[2] |= mazdacan.LKAS_LNV_MASK_B2
+    cam[7] = (cam[7] - mazdacan.LKAS_LNV_MASK_B2) % 256   # a checksum valid for LNV set
+    overlay = self._steer(packer, ctr=9, torque=300, cam_raw=int.from_bytes(cam, "big"))
+    assert overlay == self._steer(packer, ctr=9, torque=300)
 
   def test_camera_angle_bits_replaced_with_ours(self, packer):
     # a camera frame carrying a nonzero angle and enable: the overlay swaps in our
     # zero-angle pattern and the checksum delta pays for the removal, so the result is
     # the curated build byte for byte (the curated path never writes the camera's angle)
     vals = {"CTR": 5, "LKAS_REQUEST": -200, "STEERING_ANGLE": -300, "ANGLE_ENABLED": 1,
-            "LDW": 1, "LINE_NOT_VISIBLE": 1, "BIT_1": 1, "ERR_BIT_2": 1}
+            "LDW": 0, "LINE_NOT_VISIBLE": 1, "BIT_1": 1, "ERR_BIT_2": 1}
     angled = bytearray(packer.make_can_msg("CAM_LKAS", 0, dict(vals, CHKSUM=0))[1])
     tmp = -200 + 2048
-    angled[7] = (249 - 5 - (tmp >> 8) - (tmp & 0xFF) - (1 << 3) - (1 << 7) - (1 << 4) - (1 << 5)
+    angled[7] = (249 - 5 - (tmp >> 8) - (tmp & 0xFF) - (1 << 3) - (1 << 4) - (1 << 5)
                  - mazdacan._angle_checksum_terms(-300, 1)) % 256
     overlay = self._steer(packer, ctr=9, torque=300, cam_raw=int.from_bytes(angled, "big"),
                           lkas=dict(self.LKAS, STEERING_ANGLE=-300, ANGLE_ENABLED=1))
@@ -313,9 +324,13 @@ class TestSteeringCommand:
   def test_camera_bits_relay(self, packer):
     lkas = {"BIT_1": 1, "ERR_BIT_1": 1, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1}
     vl = self._steer_msg(packer, lkas)
-    for k, v in lkas.items():
-      assert vl[k] == v
+    for k in ("BIT_1", "ERR_BIT_1", "ERR_BIT_2"):
+      assert vl[k] == 1
     assert vl["LKAS_REQUEST"] == 0
+    # the EPS gates torque on the visibility state, so the curated build never sends it;
+    # the overlay carries the camera's alert bit from the raw bytes instead
+    assert vl["LDW"] == 0
+    assert vl["LINE_NOT_VISIBLE"] == 0
 
   def test_counter_wraps_at_sixteen(self, packer):
     for ctr in (0, 7, 15, 16, 33):
@@ -332,7 +347,7 @@ class TestRelayEmission:
   hold on the last frame once the camera has been quiet past the stale window). The panda,
   not the controller, yields the bus to the camera while disengaged."""
 
-  CAM_LKAS_VALUES = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 0, "CTR": 5}
+  CAM_LKAS_VALUES = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1, "CTR": 5}
   CAM_LANEINFO_VALUES = {"LANE_LINES": 2, "LDW_WARN_LL": 1, "LDW_WARN_RL": 0, "TJA": 3,
                          "TJA_TRANSITION": 1, "HANDS_WARN_3_BITS": 0b101}
 
@@ -395,8 +410,10 @@ class TestRelayEmission:
     steer_vl = steer_at[100]
     assert steer_vl["LKAS_REQUEST"] == 0
     for k, v in self.CAM_LKAS_VALUES.items():
-      if k != "CTR":
+      if k not in ("CTR", "LINE_NOT_VISIBLE"):
         assert steer_vl[k] == v
+    # the camera says the line is not visible; the EPS must not be told that
+    assert steer_vl["LINE_NOT_VISIBLE"] == 0
     assert steer_vl["CTR"] == 100 % 16
 
     # the camera's HUD frame reaches the dash byte for byte, its hands warning intact
@@ -428,10 +445,11 @@ class TestRelayEmission:
     assert [steer_at[i]["CTR"] for i in range(6)] == [6, 7, 8, 9, 10, 11]
     assert steer_at[100]["LKAS_REQUEST"] > 0
     for k, v in self.CAM_LKAS_VALUES.items():
-      if k != "CTR":
+      if k not in ("CTR", "LINE_NOT_VISIBLE"):
         assert steer_at[100][k] == v
+    assert steer_at[100]["LINE_NOT_VISIBLE"] == 0
     out = steer_dat[100]
-    assert out[2] == cam_lkas_dat[2] and out[3] == cam_lkas_dat[3]
+    assert out[3] == cam_lkas_dat[3]
     for i, mask in mazdacan.LKAS_WRITE_MASKS.items():
       assert out[i] & (0xFF ^ mask) == cam_lkas_dat[i] & (0xFF ^ mask)
 

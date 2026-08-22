@@ -105,8 +105,11 @@ def create_radar_frames(bus, counter, lead):
 
 # CAM_LKAS bits the controller owns, probed against the packer: CTR owns byte 0's high
 # nibble, the torque field byte 0's low nibble plus byte 1, the angle fields bytes 4-6.
+# LINE_NOT_VISIBLE is forced off: the EPS gates torque on the camera's line-visibility
+# state, so relaying it left openpilot able to steer only when the camera saw lanes.
 # Every other bit is the camera's and rides through the overlay untouched.
-LKAS_WRITE_MASKS = {0: 0xFF, 1: 0xFF, 4: 0x03, 5: 0xFF, 6: 0xD0}
+LKAS_WRITE_MASKS = {0: 0xFF, 1: 0xFF, 2: 0x08, 4: 0x03, 5: 0xFF, 6: 0xD0}
+LKAS_LNV_MASK_B2 = 0x08
 
 
 def _angle_checksum_terms(steering_angle: int, angle_enabled: int) -> int:
@@ -129,6 +132,7 @@ def _overlay_steering_control(ours: bytes, cam_raw: int, lkas) -> bytes:
   csum -= (ours[0] >> 4) - (dat[0] >> 4)
   csum -= (ours[0] & 0x0F) - (dat[0] & 0x0F)
   csum -= ours[1] - dat[1]
+  csum += dat[2] & LKAS_LNV_MASK_B2   # visibility bit forced off; removing it adds back
   csum += _angle_checksum_terms(int(lkas["STEERING_ANGLE"]), int(lkas["ANGLE_ENABLED"]))
   csum -= _angle_checksum_terms(0, 0)
 
@@ -148,8 +152,10 @@ def create_steering_control(packer, CP, ctr, apply_torque, lkas, cam_raw: int | 
   # copy values from camera
   b1 = int(lkas["BIT_1"])
   er1 = int(lkas["ERR_BIT_1"])
-  lnv = int(lkas["LINE_NOT_VISIBLE"])
-  ldw = int(lkas["LDW"])
+  # LINE_NOT_VISIBLE stays off and LDW is not ours to send here: the EPS gates torque on
+  # the visibility state, and the overlay carries the camera's alert bit from its raw bytes
+  lnv = 0
+  ldw = 0
   er2 = int(lkas["ERR_BIT_2"])
 
   # Some older models do have these, newer models don't.

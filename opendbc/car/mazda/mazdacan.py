@@ -164,28 +164,13 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   return packer.make_can_msg("CAM_LKAS", 0, values)
 
 
-def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool):
-  values = {s: cam_msg[s] for s in [
-    "LINE_VISIBLE",
-    "LINE_NOT_VISIBLE",
-    "LANE_LINES",
-    "BIT1",
-    "BIT2",
-    "BIT3",
-    "NO_ERR_BIT",
-    "S1",
-    "S1_HBEAM",
-  ]}
+def create_alert_command(packer, cam_msg: dict, steer_required: bool):
+  values = dict(cam_msg)
   values.update({
     # TODO: what's the difference between all these? do we need to send all?
     "HANDS_WARN_3_BITS": 0b111 if steer_required else 0,
     "HANDS_ON_STEER_WARN": steer_required,
     "HANDS_ON_STEER_WARN_2": steer_required,
-
-    # TODO: right lane works, left doesn't
-    # TODO: need to do something about L/R
-    "LDW_WARN_LL": 0,
-    "LDW_WARN_RL": 0,
   })
   return packer.make_can_msg("CAM_LANEINFO", 0, values)
 

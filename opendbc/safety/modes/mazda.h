@@ -175,6 +175,12 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  // must stay off bus while the stock camera's frames are being relayed
+  if (main_bus && ((msg->addr == MAZDA_LKAS) || (msg->addr == MAZDA_LKAS_HUD)) &&
+      !(controls_allowed || controls_allowed_lateral)) {
+    tx = false;
+  }
+
   if (mazda_longitudinal && long_replacement_bus && (msg->addr == MAZDA_CRZ_INFO)) {
     // the stock standby pattern pegs the command field high; allow it byte-exactly
     // (checksum included) instead of decoding it as a huge accel command
@@ -233,17 +239,30 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
+// LKAS and HUD frames reach the dash while openpilot isn't engaged
+static bool mazda_fwd_hook(int bus_num, int addr) {
+  bool block_msg = false;
+
+  if (bus_num == MAZDA_CAM) {
+    if ((addr == MAZDA_LKAS) || (addr == MAZDA_LKAS_HUD)) {
+      block_msg = controls_allowed || controls_allowed_lateral;
+    }
+  }
+
+  return block_msg;
+}
+
 static safety_config mazda_init(uint16_t param) {
   static const CanMsg MAZDA_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
   };
 
   static const CanMsg MAZDA_LONG_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_INFO, 0, 8, .check_relay = false},
     {MAZDA_CRZ_CTRL, 0, 8, .check_relay = false},
     {MAZDA_RADAR_STATIC, 0, 8, .check_relay = false},
@@ -292,4 +311,5 @@ const safety_hooks mazda_hooks = {
   .init = mazda_init,
   .rx = mazda_rx_hook,
   .tx = mazda_tx_hook,
+  .fwd = mazda_fwd_hook,
 };

@@ -6,6 +6,7 @@ from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, CarControllerParams
 
 CAM_LANEINFO = 0x440
+CAM_LKAS = 0x243
 
 # Real CAM_LANEINFO prefixes, captured on two CX-5 2022s running the same FSC firmware
 # (GSH7-67XK2-U). Only byte 1 differs: bit 5 is BIT2, bit 6 is NO_ERR_BIT.
@@ -76,6 +77,41 @@ class TestFscSettleGate:
     for i in range(int(CarControllerParams.FSC_SETTLE_T * 2 / DT_CTRL)):
       CI.update([(int(i * DT_CTRL * 1e9), [])])
     assert not CI.CS.fsc_settled
+
+
+class TestCamRelaySources:
+  """CS.cam_lkas and CS.cam_laneinfo are the relay sources: the controller echoes them into
+  its own 0x243 and 0x440 frames, so the camera's values must survive the decode."""
+
+  @staticmethod
+  def _feed_cam(CI, addr, values, frames=2):
+    # CANParser registers a message lazily on first access, so the first frame only arms it
+    from opendbc.can import CANPacker
+    packer = CANPacker("mazda_2017")
+    msg = packer.make_can_msg("CAM_LKAS" if addr == CAM_LKAS else "CAM_LANEINFO", 2, values)
+    for i in range(frames):
+      CI.update([(int(i * DT_CTRL * 1e9), [(addr, msg[1], 2)])])
+
+  def test_cam_lkas_decodes_the_camera_bits(self):
+    values = {"BIT_1": 1, "ERR_BIT_1": 1, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1}
+    CI = _interface()
+    self._feed_cam(CI, CAM_LKAS, values)
+    for k, v in values.items():
+      assert CI.CS.cam_lkas[k] == v
+    assert CI.CS.out.steerFaultPermanent
+
+  def test_steer_fault_follows_the_err_bit(self):
+    CI = _interface()
+    self._feed_cam(CI, CAM_LKAS, {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1})
+    assert not CI.CS.out.steerFaultPermanent
+
+  def test_cam_laneinfo_decodes_the_camera_signals(self):
+    values = {"LANE_LINES": 2, "LDW_WARN_LL": 1, "LDW_WARN_RL": 0, "TJA": 3,
+              "TJA_TRANSITION": 1, "S1": 1, "S1_HBEAM": 1}
+    CI = _interface()
+    self._feed_cam(CI, CAM_LANEINFO, values)
+    for k, v in values.items():
+      assert CI.CS.cam_laneinfo[k] == v
 
 
 class TestBrakeHold:

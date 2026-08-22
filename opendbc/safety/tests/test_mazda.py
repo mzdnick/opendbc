@@ -13,7 +13,7 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
   TX_MSGS = [[0x243, 0], [0x09d, 0], [0x440, 0]]
   STANDSTILL_THRESHOLD = .1
   RELAY_MALFUNCTION_ADDRS = {0: (0x243, 0x440)}
-  FWD_BLACKLISTED_ADDRS = {2: [0x243, 0x440]}
+  FWD_BLACKLISTED_ADDRS = {2: []}
 
   MAX_RATE_UP = 12
   MAX_RATE_DOWN = 25
@@ -26,6 +26,9 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
 
   # Mazda actually does not set any bit when requesting torque
   NO_STEER_REQ_BIT = True
+
+  # while onroad disengaged relay 0x243 and 0x440 for stock lane departure warnings
+  DISENGAGED_IDLE_STEER_TX = False
 
   def setUp(self):
     self.packer = CANPackerSafety("mazda_2017")
@@ -70,6 +73,10 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
     }
     return self.packer.make_can_msg_safety("CRZ_BTNS", 0, values)
 
+  def _hud_msg(self):
+    values = {"LANE_LINES": 2}
+    return self.packer.make_can_msg_safety("CAM_LANEINFO", 0, values)
+
   def test_buttons(self):
     # only cancel allows while controls not allowed
     self.safety.set_controls_allowed(0)
@@ -80,6 +87,22 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
     self.safety.set_controls_allowed(1)
     self.assertTrue(self._tx(self._button_msg(cancel=True)))
     self.assertTrue(self._tx(self._button_msg(resume=True)))
+
+  def test_stock_relay(self):
+    # every engagement combination: the camera keeps the bus while neither leg
+    # is allowed; either leg takes the bus and puts ours on
+    for controls, lateral, cam_fwd, own_tx in (
+      (0, 0, 0, False),   # disengaged / neither active
+      (0, 1, -1, True),   # lateral engaged
+      (1, 0, -1, True),   # longitudinal engaged
+      (1, 1, -1, True),   # both engaged
+    ):
+      self.safety.set_controls_allowed(controls)
+      self.safety.set_controls_allowed_lateral(lateral)
+      self.assertEqual(cam_fwd, self.safety.safety_fwd_hook(2, 0x243))
+      self.assertEqual(cam_fwd, self.safety.safety_fwd_hook(2, 0x440))
+      self.assertEqual(own_tx, self._tx(self._torque_cmd_msg(0)))
+      self.assertEqual(own_tx, self._tx(self._hud_msg()))
 
 
 class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafetyTest):

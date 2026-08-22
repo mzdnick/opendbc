@@ -234,6 +234,7 @@ class TorqueSteeringSafetyTestBase(SafetyTestBase, abc.ABC):
   MAX_RT_DELTA = 0
 
   NO_STEER_REQ_BIT = False
+  DISENGAGED_IDLE_STEER_TX = True
 
   @classmethod
   def setUpClass(cls):
@@ -284,7 +285,7 @@ class TorqueSteeringSafetyTestBase(SafetyTestBase, abc.ABC):
         for t in range(int(-max_torque * 1.5), int(max_torque * 1.5)):
           self.safety.set_controls_allowed(enabled)
           self._set_prev_torque(t)
-          if abs(t) > max_torque or (not enabled and abs(t) > 0):
+          if abs(t) > max_torque or (not enabled and (abs(t) > 0 or not self.DISENGAGED_IDLE_STEER_TX)):
             self.assertFalse(self._tx(self._torque_cmd_msg(t)))
           else:
             self.assertTrue(self._tx(self._torque_cmd_msg(t)))
@@ -566,7 +567,7 @@ class MotorTorqueSteeringSafetyTest(TorqueSteeringSafetyTestBase, abc.ABC):
           if controls_allowed:
             send = (-max_torque <= torque <= max_torque)
           else:
-            send = torque == 0
+            send = torque == 0 and self.DISENGAGED_IDLE_STEER_TX
 
           self.assertEqual(send, self._tx(self._torque_cmd_msg(torque)))
 

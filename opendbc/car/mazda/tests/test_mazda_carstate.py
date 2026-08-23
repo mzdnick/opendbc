@@ -6,6 +6,7 @@ from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, CarControllerParams
 
 CAM_LANEINFO = 0x440
+CAM_LKAS = 0x243
 
 # Real CAM_LANEINFO prefixes, captured on two CX-5 2022s running the same FSC firmware
 # (GSH7-67XK2-U). Only byte 1 differs: bit 5 is BIT2, bit 6 is NO_ERR_BIT.
@@ -76,6 +77,52 @@ class TestFscSettleGate:
     for i in range(int(CarControllerParams.FSC_SETTLE_T * 2 / DT_CTRL)):
       CI.update([(int(i * DT_CTRL * 1e9), [])])
     assert not CI.CS.fsc_settled
+
+
+class TestCamRelaySources:
+  """CS.cam_lkas (decoded bits) and CS.cam_lkas_raw / CS.cam_laneinfo_raw (exact frame
+  bytes) are the relay sources: the controller overlays its steering command onto the
+  camera's 0x243 bytes and re-sends the 0x440 bytes verbatim."""
+
+  @staticmethod
+  def _feed_cam(CI, addr, values, frames=2):
+    # CANParser registers a message lazily on first access, so the first frame only arms it
+    from opendbc.can import CANPacker
+    packer = CANPacker("mazda_2017")
+    msg = packer.make_can_msg("CAM_LKAS" if addr == CAM_LKAS else "CAM_LANEINFO", 2, values)
+    for i in range(frames):
+      CI.update([(int(i * DT_CTRL * 1e9), [(addr, msg[1], 2)])])
+
+  def test_cam_lkas_decodes_the_camera_bits(self):
+    values = {"BIT_1": 1, "ERR_BIT_1": 1, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1}
+    CI = _interface()
+    self._feed_cam(CI, CAM_LKAS, values)
+    for k, v in values.items():
+      assert CI.CS.cam_lkas[k] == v
+    assert CI.CS.out.steerFaultPermanent
+    assert CI.CS.cam_lkas_raw is not None
+
+  def test_cam_lkas_raw_carries_undefined_bits(self):
+    # byte 2's bits 1,2,4,5,6 and byte 3's low five bits carry no DBC signal
+    payload = bytes([0x35, 0xC7, 0xF6, 0x3B, 0xA8, 0x51, 0x7E, 0x42])
+    CI = _interface()
+    for i in range(2):
+      CI.update([(int(i * DT_CTRL * 1e9), [(CAM_LKAS, payload, 2)])])
+    assert CI.CS.cam_lkas_raw == int.from_bytes(payload, "big")
+
+  def test_steer_fault_follows_the_err_bit(self):
+    CI = _interface()
+    self._feed_cam(CI, CAM_LKAS, {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1})
+    assert not CI.CS.out.steerFaultPermanent
+
+  def test_cam_laneinfo_raw_carries_undefined_bits(self):
+    # bytes 2 and 5 carry no DBC signal at all, but the dash reads bits there
+    payload = bytes([0x42, 0x41, 0xAB, 0x00, 0x00, 0xCD, 0x71, 0x3C])
+    CI = _interface()
+    for i in range(2):
+      CI.update([(int(i * DT_CTRL * 1e9), [(CAM_LANEINFO, payload, 2)])])
+    assert CI.CS.cam_laneinfo_raw == int.from_bytes(payload, "big")
+    assert CI.CS.cam_laneinfo_ts > 0
 
 
 class TestBrakeHold:

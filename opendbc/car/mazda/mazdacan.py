@@ -103,7 +103,43 @@ def create_radar_frames(bus, counter, lead):
   return frames
 
 
-def create_steering_control(packer, CP, frame, apply_torque, lkas):
+# CAM_LKAS bits the controller owns, probed against the packer: CTR owns byte 0's high
+# nibble, the torque field byte 0's low nibble plus byte 1, the angle fields bytes 4-6.
+# LINE_NOT_VISIBLE is forced off (the EPS gates torque on it); every other bit rides through.
+LKAS_WRITE_MASKS = {0: 0xFF, 1: 0xFF, 2: 0x08, 4: 0x03, 5: 0xFF, 6: 0xD0}
+LKAS_LNV_MASK_B2 = 0x08
+
+
+def _angle_checksum_terms(steering_angle: int, angle_enabled: int) -> int:
+  # the checksum contribution the curated formula assigns to the angle fields
+  tmp = steering_angle + 2048
+  ahi = tmp >> 10
+  amd = (tmp & 0x3FF) >> 2
+  amd = (amd >> 4) | ((amd & 0xF) << 4)
+  alo = (tmp & 0x3) << 2
+  return ahi + amd + alo + angle_enabled - (15 if ahi == 1 else 0)
+
+
+def _overlay_steering_control(ours: bytes, cam_raw: int, lkas) -> bytes:
+  dat = bytearray(cam_raw.to_bytes(8, "big"))
+
+  # checksum delta over exactly the fields written below; the camera's own checksum
+  # already covers every other bit, defined or not
+  csum = dat[7]
+  csum -= (ours[0] >> 4) - (dat[0] >> 4)
+  csum -= (ours[0] & 0x0F) - (dat[0] & 0x0F)
+  csum -= ours[1] - dat[1]
+  csum += dat[2] & LKAS_LNV_MASK_B2   # visibility bit forced off; removing it adds back
+  csum += _angle_checksum_terms(int(lkas["STEERING_ANGLE"]), int(lkas["ANGLE_ENABLED"]))
+  csum -= _angle_checksum_terms(0, 0)
+
+  for i, mask in LKAS_WRITE_MASKS.items():
+    dat[i] = (dat[i] & (0xFF ^ mask)) | (ours[i] & mask)
+  dat[7] = csum % 256
+  return bytes(dat)
+
+
+def create_steering_control(packer, CP, ctr, apply_torque, lkas, cam_raw: int | None = None):
 
   tmp = apply_torque + 2048
 
@@ -113,6 +149,7 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   # copy values from camera
   b1 = int(lkas["BIT_1"])
   er1 = int(lkas["ERR_BIT_1"])
+  # LDW stays zero: the overlay carries the camera's alert bit from its raw bytes
   lnv = 0
   ldw = 0
   er2 = int(lkas["ERR_BIT_2"])
@@ -128,7 +165,7 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   amd = (amd >> 4) | ((amd & 0xF) << 4)
   alo = (tmp & 0x3) << 2
 
-  ctr = frame % 16
+  ctr = ctr % 16
   # bytes:     [    1  ] [ 2 ] [             3               ]  [           4         ]
   csum = 249 - ctr - hi - lo - (lnv << 3) - er1 - (ldw << 7) - (er2 << 4) - (b1 << 5)
 
@@ -161,33 +198,34 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
       "CHKSUM": csum
     }
 
-  return packer.make_can_msg("CAM_LKAS", 0, values)
+  if cam_raw is None:
+    return packer.make_can_msg("CAM_LKAS", 0, values)
+  # overlay: the controller's torque/counter/angle bits written into the camera's exact frame
+  ours = packer.make_can_msg("CAM_LKAS", 0, values)[1]
+  return CanData(0x243, _overlay_steering_control(ours, cam_raw, lkas), 0)
 
 
-def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool):
-  values = {s: cam_msg[s] for s in [
-    "LINE_VISIBLE",
-    "LINE_NOT_VISIBLE",
-    "LANE_LINES",
-    "BIT1",
-    "BIT2",
-    "BIT3",
-    "NO_ERR_BIT",
-    "S1",
-    "S1_HBEAM",
-  ]}
-  values.update({
-    # TODO: what's the difference between all these? do we need to send all?
-    "HANDS_WARN_3_BITS": 0b111 if steer_required else 0,
-    "HANDS_ON_STEER_WARN": steer_required,
-    "HANDS_ON_STEER_WARN_2": steer_required,
+CAM_LANEINFO_ADDR = 0x440
+# Steering-assist indicator bits: the orange wheel the dash lights while the EPS applies
+# corrective torque (the DBC's HANDS_* names are misleading). Byte positions match the
+# packer mapping: the three-bit field in byte 6, the single bits in byte 7
+STEER_IND_B6 = 0x0E
+STEER_IND_B7 = 0x09
 
-    # TODO: right lane works, left doesn't
-    # TODO: need to do something about L/R
-    "LDW_WARN_LL": 0,
-    "LDW_WARN_RL": 0,
-  })
-  return packer.make_can_msg("CAM_LANEINFO", 0, values)
+
+def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = None):
+  # byte-for-byte: bits the DBC does not describe must reach the dash as the camera sent
+  # them. steer_indicator None relays the camera's own indicator state, True/False light
+  # or clear it for openpilot's hold-the-wheel alerts
+  dat = bytearray(8 if cam_raw is None else cam_raw.to_bytes(8, "big"))
+  if steer_indicator is not None:
+    if steer_indicator:
+      dat[6] |= STEER_IND_B6
+      dat[7] |= STEER_IND_B7
+    else:
+      dat[6] &= 0xFF ^ STEER_IND_B6
+      dat[7] &= 0xFF ^ STEER_IND_B7
+  return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)
 
 
 def create_button_cmd(packer, CP, counter, button):

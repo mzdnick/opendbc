@@ -142,6 +142,8 @@ BO_ 579 CAM_LKAS: 8 XXX
  SG_ ERR_BIT_2 : 30|1@0+ (1,0) [0|1] "" XXX
  SG_ ANGLE_ENABLED : 52|1@0+ (1,0) [0|1] "" XXX
  SG_ STEERING_ANGLE : 33|12@0+ (1,-2048) [-2048|2047] "" XXX
+ SG_ FRAME_RAW_HI : 7|32@0+ (1,0) [0|4294967295] "" XXX
+ SG_ FRAME_RAW_LO : 39|32@0+ (1,0) [0|4294967295] "" XXX
 
 BO_ 580 CAM_DISTANCE: 8 XXX
  SG_ S1 : 0|8@1+ (1,0) [0|127] "" XXX
@@ -207,6 +209,8 @@ BO_ 1088 CAM_LANEINFO: 8 XXX
  SG_ LDW_WARN_LL : 57|1@0+ (1,0) [0|1] "" XXX
  SG_ TJA : 38|3@0+ (1,0) [0|7] "" XXX
  SG_ TJA_TRANSITION : 27|2@0+ (1,0) [0|63] "" XXX
+ SG_ FRAME_RAW_HI : 7|32@0+ (1,0) [0|4294967295] "" XXX
+ SG_ FRAME_RAW_LO : 39|32@0+ (1,0) [0|4294967295] "" XXX
 
 BO_ 1479 NEW_MSG_470: 8 XXX
 
@@ -728,6 +732,13 @@ CM_ SG_ 540 RADAR_LEAD_RELATIVE_DISTANCE "stop-and-go phase: 1 cruise, 2 follow,
 CM_ SG_ 605 PED_BRAKE "3: no brake, 4: brake";
 CM_ SG_ 605 BRAKE_WARNING "Flashing brake warning and audible alert for potential forward collision";
 CM_ SG_ 579 STEERING_ANGLE "steering angle aligns with 0.022 factor and -45.06 offset";
+CM_ SG_ 579 FRAME_RAW_HI "whole-frame capture, bytes 0-3; source for the byte-exact steering relay";
+CM_ SG_ 579 FRAME_RAW_LO "whole-frame capture, bytes 4-7; source for the byte-exact steering relay";
+CM_ SG_ 1088 FRAME_RAW_HI "whole-frame capture, bytes 0-3; source for the byte-exact HUD relay";
+CM_ SG_ 1088 FRAME_RAW_LO "whole-frame capture, bytes 4-7; source for the byte-exact HUD relay";
+CM_ SG_ 1088 HANDS_WARN_3_BITS "with the HANDS_ON_STEER_WARN bits, lights the steering-assist indicator: the orange wheel shown while the EPS applies corrective torque";
+CM_ SG_ 1088 HANDS_ON_STEER_WARN "steering-assist indicator, see HANDS_WARN_3_BITS";
+CM_ SG_ 1088 HANDS_ON_STEER_WARN_2 "steering-assist indicator, see HANDS_WARN_3_BITS";
 CM_ SG_ 863 SPEED_SIGN "displayed speed limit, unit per SPEED_SIGN_ON";
 CM_ SG_ 863 SPEED_SIGN_ON "0: no limit displayed, 1: limit displayed in MPH, 2: limit displayed in km/h";
 CM_ SG_ 863 SPEED_SIGN_CAM "1: The speed limit is recognized by the camera. 0: speed limit is map based or is not available";

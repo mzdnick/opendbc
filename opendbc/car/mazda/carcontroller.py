@@ -18,7 +18,6 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 # received frames between those buses, not our own transmissions.
 LONG_BUSES = (0, 2)
 
-
 class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterface):
   def __init__(self, dbc_names, CP, CP_SP):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
@@ -32,6 +31,9 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.radar_counter = 0
     self.radar_session = RadarSessionManager()
     self.accel_last = 0.
+    self.ctr_offset = 0
+    self.last_lat_active = False
+    self.last_laneinfo_ts = None
 
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
@@ -71,17 +73,24 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     if self.CP.openpilotLongitudinalControl:
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
 
-    # send HUD alerts
-    if self.frame % 50 == 0:
-      ldw = CC.hudControl.visualAlert == VisualAlert.ldw
-      steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
-      # TODO: find a way to silence audible warnings so we can add more hud alerts
-      steer_required = steer_required and CS.lkas_allowed_speed
-      can_sends.append(mazdacan.create_alert_command(self.packer, CS.cam_laneinfo, ldw, steer_required))
+    # while openpilot steers it drives the steering-assist indicator (the orange wheel
+    # stock lights while the EPS corrects) as its alert channel
+    cam_ts = CS.cam_laneinfo_ts
+    if cam_ts > 0 and cam_ts != self.last_laneinfo_ts:
+      steer_indicator = None
+      if CC.latActive:
+        steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
+        steer_indicator = steer_required and CS.lkas_allowed_speed
+      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw, steer_indicator))
+      self.last_laneinfo_ts = cam_ts
 
-    # send steering command
+    # send steering command; the counter continues the camera's sequence across an engage
+    if CC.latActive and not self.last_lat_active:
+      self.ctr_offset = (int(CS.cam_lkas["CTR"]) + 1 - self.frame) % 16
+    self.last_lat_active = CC.latActive
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
-                                                      self.frame, apply_torque, CS.cam_lkas))
+                                                      self.frame + self.ctr_offset,
+                                                      apply_torque, CS.cam_lkas, CS.cam_lkas_raw))
 
     # Intelligent Cruise Button Management
     # Suppress ICBM CRZ_BTNS spam while cancel/resume are in flight or while the driver is

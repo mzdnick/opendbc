@@ -272,7 +272,7 @@ class TestSteeringOverlay:
 
 class TestLaneinfoRelay:
   """CAM_LANEINFO relay: the camera's frame reaches the dash byte for byte; while
-  openpilot steers, only the hands-warn bits are its own."""
+  openpilot steers, only the steering-assist indicator bits are its own."""
 
   @pytest.fixture
   def packer(self):
@@ -292,25 +292,25 @@ class TestLaneinfoRelay:
     assert relay.dat == bytes(cam_dat)
     assert relay.address == 0x440 and relay.src == 0
 
-  def test_hands_bits_set_and_clear_touch_nothing_else(self, packer):
+  def test_indicator_bits_set_and_clear_touch_nothing_else(self, packer):
     cam_dat = self._cam_dat(packer)
     cam_dat[2] = 0xAB
     raw = int.from_bytes(cam_dat, "big")
-    for hands in (True, False):
-      relay = mazdacan.create_laneinfo_relay(raw, hands)
+    for lit in (True, False):
+      relay = mazdacan.create_laneinfo_relay(raw, lit)
       assert relay.dat[:6] == bytes(cam_dat[:6])
-      b6 = (cam_dat[6] | mazdacan.HANDS_WARN_B6) if hands else (cam_dat[6] & (0xFF ^ mazdacan.HANDS_WARN_B6))
-      b7 = (cam_dat[7] | mazdacan.HANDS_WARN_B7) if hands else (cam_dat[7] & (0xFF ^ mazdacan.HANDS_WARN_B7))
+      b6 = (cam_dat[6] | mazdacan.STEER_IND_B6) if lit else (cam_dat[6] & (0xFF ^ mazdacan.STEER_IND_B6))
+      b7 = (cam_dat[7] | mazdacan.STEER_IND_B7) if lit else (cam_dat[7] & (0xFF ^ mazdacan.STEER_IND_B7))
       assert relay.dat[6] == b6
       assert relay.dat[7] == b7
 
-  def test_hands_masks_match_the_packer_mapping(self, packer):
-    # the masks must hit exactly the bits the packer assigns to the three hands signals
+  def test_indicator_masks_match_the_packer_mapping(self, packer):
+    # the masks must hit exactly the bits the packer assigns to the HANDS_* signals
     dark = self._cam_dat(packer)
     lit = self._cam_dat(packer, {"HANDS_WARN_3_BITS": 0b111, "HANDS_ON_STEER_WARN": 1,
                                  "HANDS_ON_STEER_WARN_2": 1})
     diff = [(i, a ^ b) for i, (a, b) in enumerate(zip(dark, lit, strict=True)) if a != b]
-    assert diff == [(6, mazdacan.HANDS_WARN_B6), (7, mazdacan.HANDS_WARN_B7)]
+    assert diff == [(6, mazdacan.STEER_IND_B6), (7, mazdacan.STEER_IND_B7)]
 
   def test_line_suppression_touches_only_the_lanes_field(self, packer):
     cam_dat = self._cam_dat(packer, {"LANE_LINES": 4})
@@ -449,7 +449,7 @@ class TestRelayEmission:
     assert steer_vl["LINE_NOT_VISIBLE"] == 0
     assert steer_vl["CTR"] == 100 % 16
 
-    # the camera's HUD frame reaches the dash byte for byte, its hands warning intact
+    # the camera's HUD frame reaches the dash byte for byte, its indicator state intact
     for dat in hud_at.values():
       assert dat == cam_dat
 
@@ -467,12 +467,12 @@ class TestRelayEmission:
       if any(a == 0x440 for a, _, _ in sends):
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
 
-    # the HUD frame is the camera's with the hands warning suppressed and the lane
+    # the HUD frame is the camera's with the indicator cleared and the lane
     # display blanked: while openpilot steers quietly, neither the camera's "LAS applying
     # torque" nag nor its lines belong on the dash
     expected = bytearray(cam_dat)
-    expected[6] &= 0xFF ^ mazdacan.HANDS_WARN_B6
-    expected[7] &= 0xFF ^ mazdacan.HANDS_WARN_B7
+    expected[6] &= 0xFF ^ mazdacan.STEER_IND_B6
+    expected[7] &= 0xFF ^ mazdacan.STEER_IND_B7
     expected[1] &= 0xFF ^ mazdacan.LANE_LINES_MASK_B1
     assert sorted(hud_at) == [0, 101, 151, 201]
     for dat in hud_at.values():
@@ -492,7 +492,7 @@ class TestRelayEmission:
     for i, mask in mazdacan.LKAS_WRITE_MASKS.items():
       assert out[i] & (0xFF ^ mask) == cam_lkas_dat[i] & (0xFF ^ mask)
 
-  def test_engaged_steer_required_lights_the_hands_warning(self, ci):
+  def test_engaged_steer_required_lights_the_steering_assist_indicator(self, ci):
     cam_dat = self._feed_camera(ci)[1]
     CC = self._control(enabled=True, lat_active=True, steer_required=True)
     hud_at = {}
@@ -502,8 +502,8 @@ class TestRelayEmission:
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
     # the pre-branch channel is back: openpilot's hold-the-wheel alerts reach the dash
     expected = bytearray(cam_dat)
-    expected[6] |= mazdacan.HANDS_WARN_B6
-    expected[7] |= mazdacan.HANDS_WARN_B7
+    expected[6] |= mazdacan.STEER_IND_B6
+    expected[7] |= mazdacan.STEER_IND_B7
     for dat in hud_at.values():
       assert dat == bytes(expected)
 
@@ -543,9 +543,9 @@ class TestRelayEmission:
       _, sends = self._apply(ci, i, CC)
       if any(a == 0x440 for a, _, _ in sends):
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
-    # nothing from the camera: only the stale hold fires, zeros under our hands bits
+    # nothing from the camera: only the stale hold fires, zeros under the indicator bits
     assert sorted(hud_at) == [100, 150]
-    assert hud_at[100] == bytes([0, 0, 0, 0, 0, 0, mazdacan.HANDS_WARN_B6, mazdacan.HANDS_WARN_B7])
+    assert hud_at[100] == bytes([0, 0, 0, 0, 0, 0, mazdacan.STEER_IND_B6, mazdacan.STEER_IND_B7])
 
 
 class TestStandstillHold:

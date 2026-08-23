@@ -76,17 +76,18 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     if self.CP.openpilotLongitudinalControl:
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
 
-    # while openpilot steers, the camera's hands warning tracks "LAS applying torque"
-    # rather than the driver, so the relay carries openpilot's alert and blanks the lines
+    # while openpilot steers it drives the steering-assist indicator (the orange wheel
+    # stock lights while the EPS corrects) as its alert channel, and blanks the lines
     cam_ts = CS.cam_laneinfo_ts
     new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
     if new_frame or (self.laneinfo_age_frames >= LANEINFO_STALE_FRAMES and self.laneinfo_age_frames % 50 == 0):
-      hands = None
+      steer_indicator = None
       if CC.latActive:
         steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
-        hands = steer_required and CS.lkas_allowed_speed
+        steer_indicator = steer_required and CS.lkas_allowed_speed
       can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw if cam_ts > 0 else None,
-                                                      hands, hands is not None and not hands))
+                                                      steer_indicator,
+                                                      steer_indicator is not None and not steer_indicator))
       self.last_laneinfo_ts = cam_ts
     self.laneinfo_age_frames = 0 if new_frame else self.laneinfo_age_frames + 1
 

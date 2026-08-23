@@ -206,23 +206,26 @@ def create_steering_control(packer, CP, ctr, apply_torque, lkas, cam_raw: int | 
 
 
 CAM_LANEINFO_ADDR = 0x440
-# Hands-warn bits, byte positions matching the packer mapping: HANDS_WARN_3_BITS sits in
-# byte 6, the two single-bit warnings in byte 7
-HANDS_WARN_B6 = 0x0E
-HANDS_WARN_B7 = 0x09
+# Steering-assist indicator bits: the orange wheel the dash lights while the EPS applies
+# corrective torque (the DBC's HANDS_* names are misleading). Byte positions match the
+# packer mapping: the three-bit field in byte 6, the single bits in byte 7
+STEER_IND_B6 = 0x0E
+STEER_IND_B7 = 0x09
 LANE_LINES_MASK_B1 = 0x07   # LANE_LINES, 0 = LKAS disabled
 
 
-def create_laneinfo_relay(cam_raw: int | None, hands: bool | None = None, suppress_lines: bool = False):
-  # byte-for-byte: bits the DBC does not describe must reach the dash as the camera sent them
+def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = None, suppress_lines: bool = False):
+  # byte-for-byte: bits the DBC does not describe must reach the dash as the camera sent
+  # them. steer_indicator None relays the camera's own indicator state, True/False light
+  # or clear it for openpilot's hold-the-wheel alerts
   dat = bytearray(8 if cam_raw is None else cam_raw.to_bytes(8, "big"))
-  if hands is not None:
-    if hands:
-      dat[6] |= HANDS_WARN_B6
-      dat[7] |= HANDS_WARN_B7
+  if steer_indicator is not None:
+    if steer_indicator:
+      dat[6] |= STEER_IND_B6
+      dat[7] |= STEER_IND_B7
     else:
-      dat[6] &= 0xFF ^ HANDS_WARN_B6
-      dat[7] &= 0xFF ^ HANDS_WARN_B7
+      dat[6] &= 0xFF ^ STEER_IND_B6
+      dat[7] &= 0xFF ^ STEER_IND_B7
   if suppress_lines:
     dat[1] &= 0xFF ^ LANE_LINES_MASK_B1
   return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)

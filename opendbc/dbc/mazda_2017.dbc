@@ -736,6 +736,9 @@ CM_ SG_ 579 FRAME_RAW_HI "whole-frame capture, bytes 0-3; source for the byte-ex
 CM_ SG_ 579 FRAME_RAW_LO "whole-frame capture, bytes 4-7; source for the byte-exact steering relay";
 CM_ SG_ 1088 FRAME_RAW_HI "whole-frame capture, bytes 0-3; source for the byte-exact HUD relay";
 CM_ SG_ 1088 FRAME_RAW_LO "whole-frame capture, bytes 4-7; source for the byte-exact HUD relay";
+CM_ SG_ 1088 HANDS_WARN_3_BITS "with the HANDS_ON_STEER_WARN bits, lights the steering-assist indicator: the orange wheel shown while the EPS applies corrective torque";
+CM_ SG_ 1088 HANDS_ON_STEER_WARN "steering-assist indicator, see HANDS_WARN_3_BITS";
+CM_ SG_ 1088 HANDS_ON_STEER_WARN_2 "steering-assist indicator, see HANDS_WARN_3_BITS";
 CM_ SG_ 863 SPEED_SIGN "displayed speed limit, unit per SPEED_SIGN_ON";
 CM_ SG_ 863 SPEED_SIGN_ON "0: no limit displayed, 1: limit displayed in MPH, 2: limit displayed in km/h";
 CM_ SG_ 863 SPEED_SIGN_CAM "1: The speed limit is recognized by the camera. 0: speed limit is map based or is not available";

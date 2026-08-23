@@ -211,7 +211,7 @@ CAM_LANEINFO_ADDR = 0x440
 # packer mapping: the three-bit field in byte 6, the single bits in byte 7
 STEER_IND_B6 = 0x0E
 STEER_IND_B7 = 0x09
-LANE_LINES_MASK_B1 = 0x07   # LANE_LINES, 0 = LKAS disabled
+LANE_LINES_MASK_B1 = 0x07   # LANE_LINES, 0 = LKAS disabled, 1 = no lines detected
 
 
 def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = None, suppress_lines: bool = False):
@@ -227,7 +227,9 @@ def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = No
       dat[6] &= 0xFF ^ STEER_IND_B6
       dat[7] &= 0xFF ^ STEER_IND_B7
   if suppress_lines:
-    dat[1] &= 0xFF ^ LANE_LINES_MASK_B1
+    # forced to 1, never 0: "disabled" beside the always-live 0x243 trips the dash's
+    # camera-fault watchdog; "on, no lines" is a state stock itself sends
+    dat[1] = (dat[1] & (0xFF ^ LANE_LINES_MASK_B1)) | 1
   return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)
 
 

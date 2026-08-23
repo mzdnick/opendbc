@@ -317,7 +317,7 @@ class TestLaneinfoRelay:
     cam_dat[2] = 0xAB
     relay = mazdacan.create_laneinfo_relay(int.from_bytes(cam_dat, "big"), suppress_lines=True)
     expected = bytearray(cam_dat)
-    expected[1] &= 0xFF ^ mazdacan.LANE_LINES_MASK_B1
+    expected[1] = (expected[1] & (0xFF ^ mazdacan.LANE_LINES_MASK_B1)) | 1
     assert relay.dat == bytes(expected)
     # the mask covers exactly the bits the packer assigns to LANE_LINES
     other = self._cam_dat(packer, {"LANE_LINES": 1})
@@ -468,12 +468,12 @@ class TestRelayEmission:
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
 
     # the HUD frame is the camera's with the indicator cleared and the lane
-    # display blanked: while openpilot steers quietly, neither the camera's "LAS applying
-    # torque" nag nor its lines belong on the dash
+    # display quiet ("on, no lines"): while openpilot steers quietly, neither the
+    # camera's "LAS applying torque" nag nor its lines belong on the dash
     expected = bytearray(cam_dat)
     expected[6] &= 0xFF ^ mazdacan.STEER_IND_B6
     expected[7] &= 0xFF ^ mazdacan.STEER_IND_B7
-    expected[1] &= 0xFF ^ mazdacan.LANE_LINES_MASK_B1
+    expected[1] = (expected[1] & (0xFF ^ mazdacan.LANE_LINES_MASK_B1)) | 1
     assert sorted(hud_at) == [0, 101, 151, 201]
     for dat in hud_at.values():
       assert dat == bytes(expected)

@@ -85,7 +85,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # camera's frame passes through untouched
     cam_ts = CS.cam_laneinfo_ts
     new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
-    if new_frame or (self.laneinfo_age_frames > LANEINFO_STALE_FRAMES and self.frame % 50 == 0):
+    if new_frame or (self.laneinfo_age_frames >= LANEINFO_STALE_FRAMES and self.laneinfo_age_frames % 50 == 0):
       hands = None
       if CC.latActive:
         steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired

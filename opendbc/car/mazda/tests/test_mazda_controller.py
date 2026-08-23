@@ -438,7 +438,7 @@ class TestRelayEmission:
     # 0x243 at 100 Hz with zero torque; the HUD relay fires on the first camera frame,
     # then only the 2 Hz hold fires while the camera stays quiet
     assert steer_frames == 250
-    assert sorted(hud_at) == [0, 150, 200]
+    assert sorted(hud_at) == [0, 101, 151, 201]
 
     steer_vl = steer_at[100]
     assert steer_vl["LKAS_REQUEST"] == 0
@@ -474,7 +474,7 @@ class TestRelayEmission:
     expected[6] &= 0xFF ^ mazdacan.HANDS_WARN_B6
     expected[7] &= 0xFF ^ mazdacan.HANDS_WARN_B7
     expected[1] &= 0xFF ^ mazdacan.LANE_LINES_MASK_B1
-    assert sorted(hud_at) == [0, 150, 200]
+    assert sorted(hud_at) == [0, 101, 151, 201]
     for dat in hud_at.values():
       assert dat == bytes(expected)
 
@@ -544,8 +544,8 @@ class TestRelayEmission:
       if any(a == 0x440 for a, _, _ in sends):
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
     # nothing from the camera: only the stale hold fires, zeros under our hands bits
-    assert sorted(hud_at) == [150]
-    assert hud_at[150] == bytes([0, 0, 0, 0, 0, 0, mazdacan.HANDS_WARN_B6, mazdacan.HANDS_WARN_B7])
+    assert sorted(hud_at) == [100, 150]
+    assert hud_at[100] == bytes([0, 0, 0, 0, 0, 0, mazdacan.HANDS_WARN_B6, mazdacan.HANDS_WARN_B7])
 
 
 class TestStandstillHold:

@@ -363,7 +363,8 @@ class TestSteeringCommand:
 
 class TestRelayEmission:
   """Drives the real interface: the controller emits its own 0x243 every frame regardless of
-  engagement, and relays the camera's 0x440 the moment a new camera frame lands. The panda,
+  engagement, and relays the camera's 0x440 the moment a new camera frame lands (with a 2 Hz
+  hold on the last frame once the camera has been quiet past the stale window). The panda,
   not the controller, yields the bus to the camera while disengaged."""
 
   CAM_LKAS_VALUES = {"BIT_1": 1, "ERR_BIT_1": 0, "ERR_BIT_2": 1, "LDW": 1, "LINE_NOT_VISIBLE": 1, "CTR": 5}
@@ -423,9 +424,10 @@ class TestRelayEmission:
       if any(a == 0x440 for a, _, _ in sends):
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
 
-    # 0x243 at 100 Hz with zero torque; the HUD relay fires on each new camera frame
+    # 0x243 at 100 Hz with zero torque; the HUD relay fires on the first camera frame,
+    # then only the 2 Hz hold fires while the camera stays quiet
     assert steer_frames == 250
-    assert sorted(hud_at) == [0]
+    assert sorted(hud_at) == [0, 101, 151, 201]
 
     steer_vl = steer_at[100]
     assert steer_vl["LKAS_REQUEST"] == 0
@@ -459,7 +461,7 @@ class TestRelayEmission:
     expected = bytearray(cam_dat)
     expected[6] &= 0xFF ^ mazdacan.STEER_IND_B6
     expected[7] &= 0xFF ^ mazdacan.STEER_IND_B7
-    assert sorted(hud_at) == [0]
+    assert sorted(hud_at) == [0, 101, 151, 201]
     for dat in hud_at.values():
       assert dat == bytes(expected)
 
@@ -518,6 +520,19 @@ class TestRelayEmission:
         ctrs.append(self._decode(sends, 0x243)["CTR"])
     # camera CTR 5: every engage edge restarts our sequence at 6
     assert ctrs[0] == ctrs[10] == 6
+
+  def test_no_camera_frame_holds_the_zero_frame(self, ci):
+    for i in range(2):
+      ci.update([(int(i * DT_CTRL * 1e9), [])])
+    CC = self._control(enabled=True, lat_active=True, steer_required=True)
+    hud_at = {}
+    for i in range(200):
+      _, sends = self._apply(ci, i, CC)
+      if any(a == 0x440 for a, _, _ in sends):
+        hud_at[i] = next(d for a, d, b in sends if a == 0x440)
+    # nothing from the camera: only the stale hold fires, zeros under the indicator bits
+    assert sorted(hud_at) == [100, 150]
+    assert hud_at[100] == bytes([0, 0, 0, 0, 0, 0, mazdacan.STEER_IND_B6, mazdacan.STEER_IND_B7])
 
 
 class TestStandstillHold:

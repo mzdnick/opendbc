@@ -1,7 +1,7 @@
 import numpy as np
 
 from opendbc.can import CANPacker
-from opendbc.car import Bus, make_tester_present_msg, rate_limit, structs, uds
+from opendbc.car import Bus, DT_CTRL, make_tester_present_msg, rate_limit, structs, uds
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
@@ -18,6 +18,8 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 # received frames between those buses, not our own transmissions.
 LONG_BUSES = (0, 2)
 
+# a quiet camera longer than this drops the HUD relay to the 2 Hz hold on the last frame
+LANEINFO_STALE_FRAMES = int(1.0 / DT_CTRL)
 class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterface):
   def __init__(self, dbc_names, CP, CP_SP):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
@@ -34,6 +36,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.ctr_offset = 0
     self.last_lat_active = False
     self.last_laneinfo_ts = None
+    self.laneinfo_age_frames = 0
 
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
@@ -76,13 +79,16 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # while openpilot steers it drives the steering-assist indicator (the orange wheel
     # stock lights while the EPS corrects) as its alert channel
     cam_ts = CS.cam_laneinfo_ts
-    if cam_ts > 0 and cam_ts != self.last_laneinfo_ts:
+    new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
+    if new_frame or (self.laneinfo_age_frames >= LANEINFO_STALE_FRAMES and self.laneinfo_age_frames % 50 == 0):
       steer_indicator = None
       if CC.latActive:
         steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
         steer_indicator = steer_required and CS.lkas_allowed_speed
-      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw, steer_indicator))
+      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw if cam_ts > 0 else None,
+                                                      steer_indicator))
       self.last_laneinfo_ts = cam_ts
+    self.laneinfo_age_frames = 0 if new_frame else self.laneinfo_age_frames + 1
 
     # send steering command; the counter continues the camera's sequence across an engage
     if CC.latActive and not self.last_lat_active:

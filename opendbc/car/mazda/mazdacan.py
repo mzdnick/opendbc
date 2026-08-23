@@ -105,9 +105,7 @@ def create_radar_frames(bus, counter, lead):
 
 # CAM_LKAS bits the controller owns, probed against the packer: CTR owns byte 0's high
 # nibble, the torque field byte 0's low nibble plus byte 1, the angle fields bytes 4-6.
-# LINE_NOT_VISIBLE is forced off: the EPS gates torque on the camera's line-visibility
-# state, so relaying it left openpilot able to steer only when the camera saw lanes.
-# Every other bit is the camera's and rides through the overlay untouched.
+# LINE_NOT_VISIBLE is forced off (the EPS gates torque on it); every other bit rides through.
 LKAS_WRITE_MASKS = {0: 0xFF, 1: 0xFF, 2: 0x08, 4: 0x03, 5: 0xFF, 6: 0xD0}
 LKAS_LNV_MASK_B2 = 0x08
 
@@ -126,8 +124,7 @@ def _overlay_steering_control(ours: bytes, cam_raw: int, lkas) -> bytes:
   dat = bytearray(cam_raw.to_bytes(8, "big"))
 
   # checksum delta over exactly the fields written below; the camera's own checksum
-  # already covers every other bit, defined or not. Counter and torque come out of the
-  # curated bytes: byte 0's nibbles and byte 1.
+  # already covers every other bit, defined or not
   csum = dat[7]
   csum -= (ours[0] >> 4) - (dat[0] >> 4)
   csum -= (ours[0] & 0x0F) - (dat[0] & 0x0F)
@@ -152,8 +149,7 @@ def create_steering_control(packer, CP, ctr, apply_torque, lkas, cam_raw: int | 
   # copy values from camera
   b1 = int(lkas["BIT_1"])
   er1 = int(lkas["ERR_BIT_1"])
-  # LINE_NOT_VISIBLE stays off and LDW is not ours to send here: the EPS gates torque on
-  # the visibility state, and the overlay carries the camera's alert bit from its raw bytes
+  # LDW stays zero: the overlay carries the camera's alert bit from its raw bytes
   lnv = 0
   ldw = 0
   er2 = int(lkas["ERR_BIT_2"])
@@ -204,7 +200,7 @@ def create_steering_control(packer, CP, ctr, apply_torque, lkas, cam_raw: int | 
 
   if cam_raw is None:
     return packer.make_can_msg("CAM_LKAS", 0, values)
-  # overlay: our torque/counter/angle bits written into the camera's exact frame
+  # overlay: the controller's torque/counter/angle bits written into the camera's exact frame
   ours = packer.make_can_msg("CAM_LKAS", 0, values)[1]
   return CanData(0x243, _overlay_steering_control(ours, cam_raw, lkas), 0)
 
@@ -218,13 +214,7 @@ LANE_LINES_MASK_B1 = 0x07   # LANE_LINES, 0 = LKAS disabled
 
 
 def create_laneinfo_relay(cam_raw: int | None, hands: bool | None = None, suppress_lines: bool = False):
-  # Relays the camera's frame byte for byte, so bits the DBC does not describe (all of
-  # byte 2 among them) reach the dash exactly as sent. hands None passes the camera's own
-  # warning through; while openpilot steers, the camera's warning there tracks "LAS
-  # applying torque" rather than the driver, so the bits carry openpilot's hold-the-wheel
-  # alert instead. suppress_lines blanks the lane display (LANE_LINES = LKAS disabled)
-  # while openpilot steers quietly; the caller relays the frame untouched during
-  # openpilot's own alerts, so those keep the rendering the car already knows.
+  # byte-for-byte: bits the DBC does not describe must reach the dash as the camera sent them
   dat = bytearray(8 if cam_raw is None else cam_raw.to_bytes(8, "big"))
   if hands is not None:
     if hands:

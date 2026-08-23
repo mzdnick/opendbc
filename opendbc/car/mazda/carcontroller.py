@@ -76,13 +76,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     if self.CP.openpilotLongitudinalControl:
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
 
-    # relay the camera's HUD frame the moment a new one lands, at the camera's own cadence;
-    # once the camera has been quiet past the stale window, hold the last frame at 2 Hz.
-    # While openpilot steers: the camera's hands warning there tracks "LAS applying
-    # torque" rather than the driver, so the bits carry openpilot's hold-the-wheel alert;
-    # the lane display is blanked while quiet and sent byte-exact during openpilot's own
-    # alerts, so those keep the rendering the car already knows. Not steering, the
-    # camera's frame passes through untouched
+    # while openpilot steers, the camera's hands warning tracks "LAS applying torque"
+    # rather than the driver, so the relay carries openpilot's alert and blanks the lines
     cam_ts = CS.cam_laneinfo_ts
     new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
     if new_frame or (self.laneinfo_age_frames >= LANEINFO_STALE_FRAMES and self.laneinfo_age_frames % 50 == 0):

@@ -214,14 +214,17 @@ CAM_LANEINFO_ADDR = 0x440
 # byte 6, the two single-bit warnings in byte 7
 HANDS_WARN_B6 = 0x0E
 HANDS_WARN_B7 = 0x09
+LANE_LINES_MASK_B1 = 0x07   # LANE_LINES, 0 = LKAS disabled
 
 
-def create_laneinfo_relay(cam_raw: int | None, hands: bool | None = None):
+def create_laneinfo_relay(cam_raw: int | None, hands: bool | None = None, suppress_lines: bool = False):
   # Relays the camera's frame byte for byte, so bits the DBC does not describe (all of
   # byte 2 among them) reach the dash exactly as sent. hands None passes the camera's own
   # warning through; while openpilot steers, the camera's warning there tracks "LAS
   # applying torque" rather than the driver, so the bits carry openpilot's hold-the-wheel
-  # alert instead.
+  # alert instead. suppress_lines blanks the lane display (LANE_LINES = LKAS disabled)
+  # while openpilot steers quietly; the caller relays the frame untouched during
+  # openpilot's own alerts, so those keep the rendering the car already knows.
   dat = bytearray(8 if cam_raw is None else cam_raw.to_bytes(8, "big"))
   if hands is not None:
     if hands:
@@ -230,6 +233,8 @@ def create_laneinfo_relay(cam_raw: int | None, hands: bool | None = None):
     else:
       dat[6] &= 0xFF ^ HANDS_WARN_B6
       dat[7] &= 0xFF ^ HANDS_WARN_B7
+  if suppress_lines:
+    dat[1] &= 0xFF ^ LANE_LINES_MASK_B1
   return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)
 
 

@@ -312,6 +312,17 @@ class TestLaneinfoRelay:
     diff = [(i, a ^ b) for i, (a, b) in enumerate(zip(dark, lit, strict=True)) if a != b]
     assert diff == [(6, mazdacan.HANDS_WARN_B6), (7, mazdacan.HANDS_WARN_B7)]
 
+  def test_line_suppression_touches_only_the_lanes_field(self, packer):
+    cam_dat = self._cam_dat(packer, {"LANE_LINES": 4})
+    cam_dat[2] = 0xAB
+    relay = mazdacan.create_laneinfo_relay(int.from_bytes(cam_dat, "big"), suppress_lines=True)
+    expected = bytearray(cam_dat)
+    expected[1] &= 0xFF ^ mazdacan.LANE_LINES_MASK_B1
+    assert relay.dat == bytes(expected)
+    # the mask covers exactly the bits the packer assigns to LANE_LINES
+    other = self._cam_dat(packer, {"LANE_LINES": 1})
+    assert (cam_dat[1] ^ other[1]) & mazdacan.LANE_LINES_MASK_B1 == cam_dat[1] ^ other[1]
+
   def test_camera_signals_decode_back(self, packer):
     values = {"LANE_LINES": 2, "LDW_WARN_LL": 1, "LDW_WARN_RL": 0, "TJA": 3,
               "TJA_TRANSITION": 2, "S1": 1, "S1_HBEAM": 1, "ERR_BIT": 1}
@@ -456,11 +467,13 @@ class TestRelayEmission:
       if any(a == 0x440 for a, _, _ in sends):
         hud_at[i] = next(d for a, d, b in sends if a == 0x440)
 
-    # the HUD frame is the camera's with the hands warning suppressed: while openpilot
-    # steers without an alert of its own, the camera's "LAS applying torque" nag is off
+    # the HUD frame is the camera's with the hands warning suppressed and the lane
+    # display blanked: while openpilot steers quietly, neither the camera's "LAS applying
+    # torque" nag nor its lines belong on the dash
     expected = bytearray(cam_dat)
     expected[6] &= 0xFF ^ mazdacan.HANDS_WARN_B6
     expected[7] &= 0xFF ^ mazdacan.HANDS_WARN_B7
+    expected[1] &= 0xFF ^ mazdacan.LANE_LINES_MASK_B1
     assert sorted(hud_at) == [0, 150, 200]
     for dat in hud_at.values():
       assert dat == bytes(expected)

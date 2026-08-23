@@ -11,6 +11,7 @@ from opendbc.car.mazda.values import CarControllerParams, Buttons
 
 from opendbc.sunnypilot.car.mazda.icbm import IntelligentCruiseButtonManagementInterface
 
+VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 # Synthetic radar frames go to the car and to the camera; the panda only forwards
@@ -77,11 +78,17 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
 
     # relay the camera's HUD frame the moment a new one lands, at the camera's own cadence;
     # once the camera has been quiet past the stale window, hold the last frame at 2 Hz.
-    # the camera's own hands warning passes through untouched in both states
+    # While openpilot steers, the hands-warn bits carry its hold-the-wheel alerts (the
+    # camera's own warning there tracks "LAS applying torque", not the driver); otherwise
+    # the camera's warning passes through untouched
     cam_ts = CS.cam_laneinfo_ts
     new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
     if new_frame or (self.laneinfo_age_frames > LANEINFO_STALE_FRAMES and self.frame % 50 == 0):
-      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw if cam_ts > 0 else None))
+      hands = None
+      if CC.latActive:
+        steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
+        hands = steer_required and CS.lkas_allowed_speed
+      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw if cam_ts > 0 else None, hands))
       self.last_laneinfo_ts = cam_ts
     self.laneinfo_age_frames = 0 if new_frame else self.laneinfo_age_frames + 1
 

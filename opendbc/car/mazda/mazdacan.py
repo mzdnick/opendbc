@@ -210,13 +210,27 @@ def create_steering_control(packer, CP, ctr, apply_torque, lkas, cam_raw: int | 
 
 
 CAM_LANEINFO_ADDR = 0x440
+# Hands-warn bits, byte positions matching the packer mapping: HANDS_WARN_3_BITS sits in
+# byte 6, the two single-bit warnings in byte 7
+HANDS_WARN_B6 = 0x0E
+HANDS_WARN_B7 = 0x09
 
 
-def create_laneinfo_relay(cam_raw: int | None):
+def create_laneinfo_relay(cam_raw: int | None, hands: bool | None = None):
   # Relays the camera's frame byte for byte, so bits the DBC does not describe (all of
-  # byte 2 among them) reach the dash exactly as sent, hands warning included.
-  dat = bytes(8) if cam_raw is None else cam_raw.to_bytes(8, "big")
-  return CanData(CAM_LANEINFO_ADDR, dat, 0)
+  # byte 2 among them) reach the dash exactly as sent. hands None passes the camera's own
+  # warning through; while openpilot steers, the camera's warning there tracks "LAS
+  # applying torque" rather than the driver, so the bits carry openpilot's hold-the-wheel
+  # alert instead.
+  dat = bytearray(8 if cam_raw is None else cam_raw.to_bytes(8, "big"))
+  if hands is not None:
+    if hands:
+      dat[6] |= HANDS_WARN_B6
+      dat[7] |= HANDS_WARN_B7
+    else:
+      dat[6] &= 0xFF ^ HANDS_WARN_B6
+      dat[7] &= 0xFF ^ HANDS_WARN_B7
+  return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)
 
 
 def create_button_cmd(packer, CP, counter, button):

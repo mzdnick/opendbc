@@ -74,14 +74,15 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
 
     # while openpilot steers it drives the steering-assist indicator (the orange wheel
-    # stock lights while the EPS corrects) as its alert channel
+    # stock lights while the EPS corrects) as its alert channel, and blanks the lines
     cam_ts = CS.cam_laneinfo_ts
     if cam_ts > 0 and cam_ts != self.last_laneinfo_ts:
       steer_indicator = None
       if CC.latActive:
         steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
         steer_indicator = steer_required and CS.lkas_allowed_speed
-      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw, steer_indicator))
+      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw, steer_indicator,
+                                                      steer_indicator is not None and not steer_indicator))
       self.last_laneinfo_ts = cam_ts
 
     # send steering command; the counter continues the camera's sequence across an engage

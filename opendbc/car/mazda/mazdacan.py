@@ -211,9 +211,10 @@ CAM_LANEINFO_ADDR = 0x440
 # packer mapping: the three-bit field in byte 6, the single bits in byte 7
 STEER_IND_B6 = 0x0E
 STEER_IND_B7 = 0x09
+LANE_LINES_MASK_B1 = 0x07   # LANE_LINES, 0 = LKAS disabled
 
 
-def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = None):
+def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = None, suppress_lines: bool = False):
   # byte-for-byte: bits the DBC does not describe must reach the dash as the camera sent
   # them. steer_indicator None relays the camera's own indicator state, True/False light
   # or clear it for openpilot's hold-the-wheel alerts
@@ -225,6 +226,8 @@ def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = No
     else:
       dat[6] &= 0xFF ^ STEER_IND_B6
       dat[7] &= 0xFF ^ STEER_IND_B7
+  if suppress_lines:
+    dat[1] &= 0xFF ^ LANE_LINES_MASK_B1
   return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)
 
 

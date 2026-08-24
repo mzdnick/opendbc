@@ -1,5 +1,7 @@
 from itertools import combinations
 
+import pytest
+
 from opendbc.car import structs
 from opendbc.car.fw_versions import match_fw_to_car
 from opendbc.car.mazda.fingerprints import FW_VERSIONS
@@ -166,7 +168,8 @@ class TestMatchFwToCarVinFallback:
   exact match, unknown engine and ABS versions break generic fuzzy matching, and
   the chassis is named by the VIN, by the unique-per-platform engine firmware
   when the VIN cannot decode, or by the vetted donor EPS when nothing else
-  names the body."""
+  names the body — with the chassis code picking the body inside the EPS
+  generation."""
 
   def _swapped_mazda6_fw(self, eps_fw: bytes | None = None) -> list:
     donor_eps = eps_fw or FW_VERSIONS[CAR.MAZDA_CX5_2022][(Ecu.eps, 0x730, None)][0]
@@ -216,6 +219,43 @@ class TestMatchFwToCarVinFallback:
     exact_match, matches = match_fw_to_car(car_fw, 'JM0TC2WLA00202380')
     assert not exact_match
     assert matches == {str(CAR.MAZDA_CX9_2021)}
+
+  def _donor_eps_unknown_chassis_fw(self) -> list:
+    donor_eps = FW_VERSIONS[CAR.MAZDA_CX5_2022][(Ecu.eps, 0x730, None)][0]
+    return [
+      _car_fw(Ecu.eps, 0x730, donor_eps),
+      _car_fw(Ecu.engine, 0x7e0, UNKNOWN_ENGINE_FW),
+      _car_fw(Ecu.abs, 0x760, UNKNOWN_ABS_FW),
+      _car_fw(Ecu.transmission, 0x7e1, UNKNOWN_TRANS_FW),
+    ]
+
+  @pytest.mark.parametrize(("vin", "expected"), [
+    # real Oceania VINs (2026-08-24): no model-year char, chassis code at
+    # positions 4-5 across the CX-9 facelift and the KE/KF split
+    ('JM0TC4WLA00105382', CAR.MAZDA_CX9_2021),  # 2016 CX-9 GT
+    ('JM0TC2WLA00218292', CAR.MAZDA_CX9_2021),  # 2018 CX-9 Sport
+    ('JM0TC4WLA00500450', CAR.MAZDA_CX9_2021),  # 2020 CX-9 Azami LE
+    ('JM0KF2W7A00201451', CAR.MAZDA_CX5_2022),  # 2018 CX-5 MAXX
+    ('JM0KF4WLA10860211', CAR.MAZDA_CX5_2022),  # 2022 CX-5 G35 Akera
+    ('JM0KE103200362166', CAR.MAZDA_CX5_2022),  # 2016 CX-5 GT, KE: no body to pick
+  ])
+  def test_export_vin_picks_the_body_inside_the_eps_generation(self, vin, expected):
+    car_fw = self._donor_eps_unknown_chassis_fw()
+    exact_match, matches = match_fw_to_car(car_fw, vin)
+    assert not exact_match
+    assert matches == {str(expected)}
+
+  def test_early_kf_year_with_donor_eps_names_cx5_2022(self):
+    # a 2016-build KF (year 'G', outside the 2017+ table) with the EPS swapped
+    # in: the VIN names nothing, the chassis code still picks the body
+    exact_match, matches = match_fw_to_car(self._donor_eps_unknown_chassis_fw(), make_vin('JM3', 'KF', 'G'))
+    assert not exact_match
+    assert matches == {str(CAR.MAZDA_CX5_2022)}
+
+  def test_vin_unknown_with_donor_eps_names_the_eps_platform(self):
+    exact_match, matches = match_fw_to_car(self._donor_eps_unknown_chassis_fw(), VIN_UNKNOWN)
+    assert not exact_match
+    assert matches == {str(CAR.MAZDA_CX5_2022)}
 
   def test_ke_body_with_donor_eps_matches_by_eps(self):
     # the reported car (log 2026-08-24, VIN JM3KE4DYXG0877243): a first-gen KE

@@ -168,6 +168,10 @@ STEER_TO_ZERO_EPS_FW = {
   b'KSD5-3210X-C-00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
 }
 
+# Platforms whose stock EPS steers to zero. interface exempts them from dashcamOnly,
+# and the donor-EPS fallback picks the body inside this generation by chassis code.
+STEER_TO_ZERO_PLATFORMS = (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021)
+
 
 class Buttons:
   NONE = 0
@@ -181,9 +185,9 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
   # A donor EPS (steer-to-zero swaps) breaks every exact FW match; the VIN names
   # the chassis through any ECU swap. Runs only after exact and fuzzy FW fail.
   # Model line is VIN positions 4-5, model year code is position 10.
+  vin_obj = Vin(vin) if is_valid_vin(vin) else None
   skip_engine = False
-  if is_valid_vin(vin):
-    vin_obj = Vin(vin)
+  if vin_obj is not None:
     chassis_code = vin_obj.vds[0:2]
     year = vin_obj.vis[0]
 
@@ -220,9 +224,10 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
       carlog.error(f"Fingerprinted {next(iter(candidates))} by engine firmware")
       return {str(c) for c in candidates}
 
-  # Last resort: a steer-to-zero EPS in a chassis nothing else names (a KE or BP
-  # body with the EPS swapped in) carries the platform its firmware belongs to.
-  # Only vetted firmware names a car, so a stock unsupported chassis stays unnamed.
+  # Last resort: a steer-to-zero EPS in a chassis nothing else names carries the
+  # platform its firmware belongs to, and the chassis code picks the body inside
+  # that generation (an export CX-9 takes CX-9 2021 specs). Only vetted firmware
+  # names a car, so a stock unsupported chassis stays unnamed.
   eps_fw = live_fw_versions.get((0x730, None), set()) & STEER_TO_ZERO_EPS_FW
   candidates = set()
   for platform, ecus in offline_fw_versions.items():
@@ -230,8 +235,13 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
       candidates.add(platform)
 
   if len(candidates) == 1:
-    carlog.error(f"Fingerprinted {next(iter(candidates))} by donor EPS firmware")
-    return {str(c) for c in candidates}
+    platform = next(iter(candidates))
+    if vin_obj is not None:
+      body = {p for p in STEER_TO_ZERO_PLATFORMS if vin_obj.vds[0:2] in p.config.chassis_codes}
+      if len(body) == 1:
+        platform = next(iter(body))
+    carlog.error(f"Fingerprinted {platform} by donor EPS firmware")
+    return {str(platform)}
 
   return set()
 

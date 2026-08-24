@@ -255,7 +255,8 @@ class CarState(CarStateBase, CarStateExt):
     cam_messages = [
       # read through vl_all, which unlike vl has no lazy registration
       ("CAM_LANEINFO", 0),
-      ("CAM_TRAFFIC_SIGNS", 0),
+      # the first-gen (KE) camera never sends this frame; liveness stays on CAM_LANEINFO
+      ("CAM_TRAFFIC_SIGNS", float("nan")),
     ]
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),

@@ -5,7 +5,10 @@ from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
+from opendbc.car.mazda.fingerprints import FW_VERSIONS
 from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaSafetyFlags
+
+KNOWN_RADAR_FW = set().union(*(fw.get((structs.CarParams.Ecu.fwdRadar, 0x764, None), []) for fw in FW_VERSIONS.values()))
 
 
 class CarInterface(CarInterfaceBase):
@@ -18,7 +21,11 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "mazda"
     ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.mazda)]
 
-    ret.radarUnavailable = Bus.radar not in DBC[candidate]
+    # A radar whose firmware no platform lists sends no track messages (an EPS-swapped
+    # older car keeps its original radar): run vision-only instead of starving radarTracks.
+    # A silent radar still flags, only a talking one with unknown fw degrades.
+    ret.radarUnavailable = Bus.radar not in DBC[candidate] or \
+      any(fw.ecu == 'fwdRadar' and fw.fwVersion not in KNOWN_RADAR_FW for fw in car_fw)
 
     # 2022+ CX-5 EPS can steer to zero and has no hands-off lockout. Detected by EPS firmware
     # rather than by model, so an EPS swapped into an older Mazda is recognized as what it is.

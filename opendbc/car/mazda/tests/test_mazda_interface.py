@@ -2,6 +2,7 @@ import pytest
 
 from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.mazda.fingerprints import FW_VERSIONS
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW
 
@@ -10,15 +11,20 @@ Ecu = structs.CarParams.Ecu
 # The steer-to-zero EPS a swap donates, and a stock pre-2022 CX-5 EPS for contrast
 SWAPPED_EPS_FW = sorted(STEER_TO_ZERO_EPS_FW)[0]
 STOCK_CX5_EPS_FW = b'K319-3210X-A-00' + b'\x00' * 9
+UNKNOWN_ENGINE_FW = b'ZZ99-9999X-Z-99' + b'\x00' * 9
+
+
+def _fw(ecu, address: int, version: bytes) -> structs.CarParams.CarFw:
+  fw = structs.CarParams.CarFw()
+  fw.ecu = ecu
+  fw.address = address
+  fw.subAddress = 0
+  fw.fwVersion = version
+  return fw
 
 
 def _eps_fw(version: bytes) -> list[structs.CarParams.CarFw]:
-  fw = structs.CarParams.CarFw()
-  fw.ecu = Ecu.eps
-  fw.address = 0x730
-  fw.subAddress = 0
-  fw.fwVersion = version
-  return [fw]
+  return [_fw(Ecu.eps, 0x730, version)]
 
 
 def _params(candidate, car_fw=None, alpha_long=False):
@@ -51,6 +57,21 @@ class TestMazdaEpsSwap:
     CP = _params(CAR.MAZDA_CX5, _eps_fw(SWAPPED_EPS_FW), alpha_long=True)
     assert not CP.alphaLongitudinalAvailable
     assert not CP.openpilotLongitudinalControl
+
+  def test_unknown_engine_keeps_alpha_long_off_the_swap_body(self):
+    # an export CX-9 named CX-9 2021 by the donor-EPS fallback with a chassis the
+    # database cannot corroborate: lateral only, no radar teardown on this body
+    CP = _params(CAR.MAZDA_CX9_2021, _eps_fw(SWAPPED_EPS_FW) + [_fw(Ecu.engine, 0x7e0, UNKNOWN_ENGINE_FW)],
+                 alpha_long=True)
+    assert not CP.alphaLongitudinalAvailable
+    assert not CP.openpilotLongitudinalControl
+
+  def test_known_engine_keeps_alpha_long(self):
+    # the same car with its original engine calibration in the database: full feature set
+    engine = FW_VERSIONS[CAR.MAZDA_CX9_2021][(Ecu.engine, 0x7e0, None)][0]
+    CP = _params(CAR.MAZDA_CX9_2021, _eps_fw(SWAPPED_EPS_FW) + [_fw(Ecu.engine, 0x7e0, engine)],
+                 alpha_long=True)
+    assert CP.alphaLongitudinalAvailable
 
   def test_swapped_eps_keeps_the_real_vehicle_specs(self):
     # the whole point of fixing detection is that the user no longer forces MAZDA_CX5_2022 and

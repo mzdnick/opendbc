@@ -5,6 +5,7 @@ from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
+from opendbc.car.mazda.fingerprints import FW_VERSIONS
 from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaSafetyFlags
 
 
@@ -30,7 +31,11 @@ class CarInterface(CarInterfaceBase):
     # CX-9 2021 verified against route 00000004--97e4328f4f: same message set at the same
     # rates, CRZ_INFO checksum holds on all 54k stock frames, radar UDS at 0x764, and the
     # same FSC camera firmware (GSH7-67XK2-U) as the CX-5 2022 this was developed on.
-    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021)
+    # Alpha-long tears the stock radar down and replays its bus, so the body must corroborate
+    # the platform through engine firmware the database knows; docs and test builds carry no
+    # firmware and keep the advertised default.
+    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and \
+      (not car_fw or docs or any(fw.ecu == 'engine' and fw.fwVersion in FW_VERSIONS[candidate].get((structs.CarParams.Ecu.engine, 0x7e0, None), []) for fw in car_fw))
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
     if ret.openpilotLongitudinalControl:
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.LONG.value

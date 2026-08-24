@@ -2,6 +2,7 @@ import pytest
 
 from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.mazda.fingerprints import FW_VERSIONS
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW
 
@@ -10,15 +11,20 @@ Ecu = structs.CarParams.Ecu
 # The steer-to-zero EPS a swap donates, and a stock pre-2022 CX-5 EPS for contrast
 SWAPPED_EPS_FW = sorted(STEER_TO_ZERO_EPS_FW)[0]
 STOCK_CX5_EPS_FW = b'K319-3210X-A-00' + b'\x00' * 9
+UNKNOWN_RADAR_FW = b'ZZ99-5555X-Z-99' + b'\x00' * 9
+
+
+def _fw(ecu, address: int, version: bytes) -> structs.CarParams.CarFw:
+  fw = structs.CarParams.CarFw()
+  fw.ecu = ecu
+  fw.address = address
+  fw.subAddress = 0
+  fw.fwVersion = version
+  return fw
 
 
 def _eps_fw(version: bytes) -> list[structs.CarParams.CarFw]:
-  fw = structs.CarParams.CarFw()
-  fw.ecu = Ecu.eps
-  fw.address = 0x730
-  fw.subAddress = 0
-  fw.fwVersion = version
-  return [fw]
+  return [_fw(Ecu.eps, 0x730, version)]
 
 
 def _params(candidate, car_fw=None, alpha_long=False):
@@ -53,6 +59,25 @@ class TestMazdaEpsSwap:
     assert not CP.dashcamOnly
     assert CP.minSteerSpeed == 0
     assert CP.steerActuatorDelay == pytest.approx(0.14)
+
+  def test_unknown_radar_runs_vision_only(self):
+    # an EPS-swapped older car keeps its original radar (real case: G46L-67XA1-C,
+    # firmware in no platform list, sends no track messages) — without this it
+    # starves radarTracks and every radar-dependent validity check fails
+    CP = _params(CAR.MAZDA_CX5_2022, _eps_fw(SWAPPED_EPS_FW) + [_fw(Ecu.fwdRadar, 0x764, UNKNOWN_RADAR_FW)])
+    assert CP.radarUnavailable
+
+  def test_missing_radar_fw_stays_available(self):
+    # no fwdRadar fw in car_fw: the gate stays open, matching a silent radar
+    CP = _params(CAR.MAZDA_CX5_2022, _eps_fw(SWAPPED_EPS_FW))
+    assert not CP.radarUnavailable
+
+  def test_known_radar_stays_available(self):
+    # the 2017-21 KF radar is a different platform's entry but sends the same
+    # track messages: a list anywhere keeps the radar on
+    radar = FW_VERSIONS[CAR.MAZDA_CX5][(Ecu.fwdRadar, 0x764, None)][0]
+    CP = _params(CAR.MAZDA_CX5_2022, _eps_fw(SWAPPED_EPS_FW) + [_fw(Ecu.fwdRadar, 0x764, radar)])
+    assert not CP.radarUnavailable
 
   def test_swapped_eps_does_not_unlock_longitudinal(self):
     # the radar and camera are not part of an EPS swap, and this car keeps its own pre-2022 pair

@@ -40,8 +40,9 @@ class CarInterface(CarInterfaceBase):
     # Alpha-long tears the stock radar down and replays its bus, so the body must corroborate
     # the platform through engine firmware the database knows; docs and test builds carry no
     # firmware and keep the advertised default.
-    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and \
-      (not car_fw or docs or any(fw.ecu == 'engine' and fw.fwVersion in FW_VERSIONS[candidate].get((structs.CarParams.Ecu.engine, 0x7e0, None), []) for fw in car_fw))
+    engine_fw = FW_VERSIONS[candidate].get((structs.CarParams.Ecu.engine, 0x7e0, None), [])
+    engine_corroborated = docs or not car_fw or any(fw.ecu == 'engine' and fw.fwVersion in engine_fw for fw in car_fw)
+    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and engine_corroborated
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
     if ret.openpilotLongitudinalControl:
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.LONG.value

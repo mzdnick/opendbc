@@ -1,6 +1,6 @@
 import pytest
 
-from opendbc.car import DT_CTRL, gen_empty_fingerprint
+from opendbc.car import Bus, DT_CTRL, gen_empty_fingerprint
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, CarControllerParams
@@ -150,6 +150,32 @@ class TestTwoMasterGuard:
                               radar_alive=False, start_frame=n)
     assert not ret.accFaulted
     assert ret.cruiseState.available
+
+
+class TestCamParserLiveness:
+  """A first-gen (KE) camera on an EPS-swap build sends no CAM_TRAFFIC_SIGNS: 0 frames in
+  22.6 s while CAM_LANEINFO ran at 2 Hz (user log, KE CX-5 with a 2022 EPS, 2026-08-24). The
+  missing frame permanently failed can_valid and raised canError, which the UI words as
+  "Unknown Vehicle Variant". CAM_LANEINFO alone carries camera-bus liveness."""
+
+  def test_camera_bus_valid_without_traffic_signs(self):
+    from opendbc.can import CANPacker
+    packer = CANPacker("mazda_2017")
+    CI = _interface()
+    for i in range(int(6.0 / DT_CTRL)):
+      lkas = packer.make_can_msg("CAM_LKAS", 2, {"CTR": i % 16})
+      CI.update([(int(i * DT_CTRL * 1e9), [(CAM_LANEINFO, SETTLED, 2), (lkas[0], lkas[1], lkas[2])])])
+    assert CI.can_parsers[Bus.cam].can_valid
+    # the explicit nan entry is load-bearing: deleting it re-registers the
+    # message as required through carstate_ext's lazy vl read
+    assert CI.can_parsers[Bus.cam].message_states[0x35F].ignore_alive
+
+  def test_silent_camera_bus_stays_invalid(self):
+    CI = _interface()
+    for i in range(int(6.0 / DT_CTRL)):
+      CI.update([(int(i * DT_CTRL * 1e9), [(0x228, bytes.fromhex("142007ff02f00000"), 0)])])
+    assert not CI.can_parsers[Bus.cam].can_valid
+    assert CI.can_parsers[Bus.cam].bus_timeout
 
 
 class TestSpeedSignLimit:

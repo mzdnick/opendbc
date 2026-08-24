@@ -181,6 +181,7 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
   # A donor EPS (steer-to-zero swaps) breaks every exact FW match; the VIN names
   # the chassis through any ECU swap. Runs only after exact and fuzzy FW fail.
   # Model line is VIN positions 4-5, model year code is position 10.
+  skip_engine = False
   if is_valid_vin(vin):
     vin_obj = Vin(vin)
     chassis_code = vin_obj.vds[0:2]
@@ -200,24 +201,39 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
     # (BP, DM, KE, out-of-range years): never second-guess it with the engine.
     # WMIs outside the table (e.g. 7MM, CX-50) keep the fallback and its
     # collision risk; pinned by test.
-    if vin_obj.wmi in {wmi for platform in CAR for wmi in platform.config.wmis}:
-      return set()
+    skip_engine = vin_obj.wmi in {wmi for platform in CAR for wmi in platform.config.wmis}
 
-  # Oceania VINs encode no model year and never decode; engine firmware is
-  # unique per platform (asserted by test), so it names the chassis instead.
   # A lone responding address is not a car to name.
   if len(live_fw_versions) < 2:
     return set()
 
-  engine_fw = live_fw_versions.get((0x7e0, None), set())
+  # Oceania VINs encode no model year and never decode; engine firmware is
+  # unique per platform (asserted by test), so it names the chassis instead.
+  if not skip_engine:
+    engine_fw = live_fw_versions.get((0x7e0, None), set())
+    candidates = set()
+    for platform, ecus in offline_fw_versions.items():
+      if engine_fw & set(ecus.get((Ecu.engine, 0x7e0, None), [])):
+        candidates.add(platform)
+
+    if len(candidates) == 1:
+      carlog.error(f"Fingerprinted {next(iter(candidates))} by engine firmware")
+      return {str(c) for c in candidates}
+
+  # Last resort: a steer-to-zero EPS in a chassis nothing else names (a KE or BP
+  # body with the EPS swapped in) carries the platform its firmware belongs to.
+  # Only vetted firmware names a car, so a stock unsupported chassis stays unnamed.
+  eps_fw = live_fw_versions.get((0x730, None), set()) & STEER_TO_ZERO_EPS_FW
   candidates = set()
   for platform, ecus in offline_fw_versions.items():
-    if engine_fw & set(ecus.get((Ecu.engine, 0x7e0, None), [])):
+    if eps_fw & set(ecus.get((Ecu.eps, 0x730, None), [])):
       candidates.add(platform)
 
   if len(candidates) == 1:
-    carlog.error(f"Fingerprinted {next(iter(candidates))} by engine firmware")
-  return {str(c) for c in candidates}
+    carlog.error(f"Fingerprinted {next(iter(candidates))} by donor EPS firmware")
+    return {str(c) for c in candidates}
+
+  return set()
 
 
 FW_QUERY_CONFIG = FwQueryConfig(

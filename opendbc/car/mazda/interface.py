@@ -5,7 +5,7 @@ from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
-from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, MazdaSafetyFlags
+from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, SUPPORTED_PLATFORMS, MazdaSafetyFlags
 
 
 class CarInterface(CarInterfaceBase):
@@ -45,7 +45,7 @@ class CarInterface(CarInterfaceBase):
     # hands-off and below 45 kph. That is a property of the EPS, not of the car, so a car with
     # the 2022+ EPS swapped in is controllable and lifts with it. Longitudinal stays keyed on the
     # model above: the radar and camera are not part of an EPS swap.
-    ret.dashcamOnly = candidate not in STEER_TO_ZERO_PLATFORMS and not steer_to_zero
+    ret.dashcamOnly = candidate not in SUPPORTED_PLATFORMS and not steer_to_zero
 
     ret.enableBsm = 0x477 in fingerprint[0]
 

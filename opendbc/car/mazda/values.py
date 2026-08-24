@@ -168,9 +168,10 @@ STEER_TO_ZERO_EPS_FW = {
   b'KSD5-3210X-C-00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
 }
 
-# Platforms whose stock EPS steers to zero. interface exempts them from dashcamOnly,
-# and the donor-EPS fallback picks the body inside this generation by chassis code.
-STEER_TO_ZERO_PLATFORMS = (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021)
+# The supported pair: the CX-5 2022 steers to zero from the factory, the CX-9 2021
+# keeps the 45 km/h floor until its EPS is swapped. interface exempts them from
+# dashcamOnly; the donor-EPS fallback picks the body inside the pair by chassis code.
+SUPPORTED_PLATFORMS = (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021)
 
 
 class Buttons:
@@ -237,7 +238,7 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
   if len(candidates) == 1:
     platform = next(iter(candidates))
     if vin_obj is not None:
-      body = {p for p in STEER_TO_ZERO_PLATFORMS if vin_obj.vds[0:2] in p.config.chassis_codes}
+      body = {p for p in SUPPORTED_PLATFORMS if vin_obj.vds[0:2] in p.config.chassis_codes}
       if len(body) == 1:
         platform = next(iter(body))
     carlog.error(f"Fingerprinted {platform} by donor EPS firmware")

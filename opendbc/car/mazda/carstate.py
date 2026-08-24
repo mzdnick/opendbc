@@ -24,6 +24,7 @@ class CarState(CarStateBase, CarStateExt):
     self.crz_btns_counter = 0
     self.acc_active_last = False
     self.lkas_allowed_speed = False
+    self.eps_hands_off = False
 
     self.distance_button = 0
     self.accel_button = 0
@@ -97,6 +98,10 @@ class CarState(CarStateBase, CarStateExt):
 
     # Either due to low speed or hands off
     lkas_blocked = cp.vl["STEER_RATE"]["LKAS_BLOCK"] == 1
+
+    # the EPS raises this after 5 s without driver torque, even while it applies
+    # commanded torque, and clears it on the first touch of the wheel
+    self.eps_hands_off = cp.vl["STEER_RATE"]["HANDS_OFF_5_SECONDS"] == 1
 
     if self.CP.minSteerSpeed > 0:
       # LKAS is enabled at 52kph going up and disabled at 45kph going down

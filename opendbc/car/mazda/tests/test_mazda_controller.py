@@ -76,6 +76,58 @@ class TestCarControllerParams:
     assert pre_2022_params.STEER_DRIVER_MULTIPLIER == 1
 
 
+class TestDashHandsPolicy:
+  """The 0x440 hands bits: openpilot's own alerts never light them (a dash without a HUD
+  renders them as a LKAS error with a chime); only the EPS hands-off warning does."""
+
+  VisualAlert = structs.CarControl.HUDControl.VisualAlert
+
+  @pytest.fixture
+  def controller(self):
+    CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, {0: {}, 1: {}, 2: {}}, [], alpha_long=False,
+                                 is_release=False, docs=False)
+    CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, {0: {}, 1: {}, 2: {}}, [], True, False, False)
+    assert not CP.openpilotLongitudinalControl
+    return CarController({Bus.pt: "mazda_2017"}, CP, CP_SP)
+
+  @staticmethod
+  def _cs(eps_hands_off):
+    return SimpleNamespace(
+      out=SimpleNamespace(vEgoRaw=20.0, steeringTorque=0, standstill=False, brakePressed=False),
+      cam_laneinfo={s: 0 for s in ("LINE_VISIBLE", "LINE_NOT_VISIBLE", "LANE_LINES", "BIT1",
+                                   "BIT2", "BIT3", "NO_ERR_BIT", "S1", "S1_HBEAM")},
+      cam_lkas={"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0},
+      crz_btns_counter=0, cancel_button=0, accel_button=0, decel_button=0,
+      resume_button=0, eps_hands_off=eps_hands_off)
+
+  @classmethod
+  def _hands_bits_lit(cls, controller, lat_active, visual_alert, eps_hands_off):
+    # frame 0 satisfies the frame % 50 gate, so a single update emits the 0x440 frame;
+    # card delivers CC as a reader (actuators.as_builder exists on readers only)
+    CC = structs.CarControl.new_message()
+    CC.latActive = lat_active
+    CC.hudControl.visualAlert = visual_alert
+    _, sends = controller.update(CC.as_reader(), structs.CarControlSP(), cls._cs(eps_hands_off), 0)
+    dat = next(d for a, d, b in sends if a == 0x440)
+    cp = CANParser("mazda_2017", [("CAM_LANEINFO", 0)], 0)
+    cp.update([(0, [(0x440, dat, 0)])])
+    li = cp.vl["CAM_LANEINFO"]
+    return any((li["HANDS_WARN_3_BITS"], li["HANDS_ON_STEER_WARN"], li["HANDS_ON_STEER_WARN_2"]))
+
+  def test_steer_required_never_lights_hands_bits(self, controller):
+    # turn limit, soft disable, and steer temp unavailable all carry steerRequired
+    assert not self._hands_bits_lit(controller, lat_active=True,
+                                    visual_alert=self.VisualAlert.steerRequired, eps_hands_off=False)
+
+  def test_eps_hands_off_lights_hands_bits(self, controller):
+    assert self._hands_bits_lit(controller, lat_active=True,
+                                 visual_alert=self.VisualAlert.none, eps_hands_off=True)
+
+  def test_eps_hands_off_dark_when_disengaged(self, controller):
+    assert not self._hands_bits_lit(controller, lat_active=False,
+                                     visual_alert=self.VisualAlert.none, eps_hands_off=True)
+
+
 def crz_info_reference_checksum(dat):
   # independent reimplementation of the CRZ_INFO checksum, validated against 1.94M stock
   # frames including all 10,350 stop-bit frames

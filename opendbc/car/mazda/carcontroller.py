@@ -74,9 +74,9 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # send HUD alerts
     if self.frame % 50 == 0:
       ldw = CC.hudControl.visualAlert == VisualAlert.ldw
-      steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
-      # TODO: find a way to silence audible warnings so we can add more hud alerts
-      steer_required = steer_required and CS.lkas_allowed_speed
+      # dashes without a HUD render the hands bits as a LKAS error with a chime, so
+      # openpilot's own alerts never light them; only the EPS hands-off warning does
+      steer_required = CC.latActive and CS.eps_hands_off
       can_sends.append(mazdacan.create_alert_command(self.packer, CS.cam_laneinfo, ldw, steer_required))
 
     # send steering command

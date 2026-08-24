@@ -6,6 +6,9 @@ from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, CarControllerParams
 
 CAM_LANEINFO = 0x440
+STEER_RATE = 0x241
+# byte 6 bit 0x08: HANDS_OFF_5_SECONDS (51|1, Motorola)
+STEER_RATE_HANDS_OFF = bytes([0, 0, 0, 0, 0, 0, 0x08, 0])
 
 # Real CAM_LANEINFO prefixes, captured on two CX-5 2022s running the same FSC firmware
 # (GSH7-67XK2-U). Only byte 1 differs: bit 5 is BIT2, bit 6 is NO_ERR_BIT.
@@ -40,6 +43,17 @@ def test_carstate_runs_with_real_parsers(alpha_long):
   assert CI.CP.openpilotLongitudinalControl == alpha_long
   for _ in range(10):
     CI.update([])
+
+
+def test_eps_hands_off_tracks_the_steer_rate_bit():
+  CI = _interface()
+  # CANParser registers a message lazily, so the first frame only arms it
+  for _ in range(2):
+    CI.update([(0, [(STEER_RATE, STEER_RATE_HANDS_OFF, 0)])])
+  assert CI.CS.eps_hands_off
+  for _ in range(2):
+    CI.update([(0, [(STEER_RATE, bytes(8), 0)])])
+  assert not CI.CS.eps_hands_off
 
 
 class TestFscSettleGate:

@@ -99,6 +99,8 @@ class MazdaFlags(IntFlag):
   # Static flags
   # Gen 1 hardware: same CAN messages and same camera
   GEN1 = 1
+  # Export CX-9 PCM family whose CRZ_SPEED scale differs from the shared Mazda DBC
+  PXM7_CRUISE_SPEED = 2
 
 
 class MazdaSafetyFlags(IntFlag):
@@ -167,6 +169,14 @@ STEER_TO_ZERO_EPS_FW = {
   b'KBST-3210X-A-00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
   b'KSD5-3210X-C-00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
 }
+
+# Engine PCM prefix whose CRZ_SPEED encoding differs from the shared Mazda DBC: 196 raw
+# per cluster km/h with a -96±2 raw offset, instead of 200 with -100. Verified against
+# route ded445e51c0e1830--54d3b58a5b (PXM7-188K2-E): eight setpoints across two segments,
+# 1 km/h steps of exactly 196 raw at full frame rate. PXM4 CX-9s use the shared scale;
+# no other PXM7 part number has been observed. Keep in sync with the MAZDA_CX9_2021
+# (Ecu.engine, 0x7e0) block in fingerprints.py.
+PXM7_CRUISE_SPEED_PCM_FW_PREFIX = b'PXM7-188K2-'
 
 
 class Buttons:

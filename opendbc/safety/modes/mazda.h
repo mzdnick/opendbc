@@ -68,6 +68,8 @@ static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
             (msg->data[2] == 0xfeU) && (msg->data[3] == 0x7fU) &&
             (msg->data[4] == 0xfbU) && (msg->data[5] == 0xffU) &&
             (msg->data[6] == 0x3fU) && ((msg->data[7] & 0xf0U) == 0xc0U);
+  } else {
+    valid = false;
   }
 
   return valid;
@@ -199,7 +201,7 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
                       (msg->data[7] == ((0xd9U - msg->data[6]) & 0xffU));
 
     // 13-bit ACCEL_CMD: data[2] low bits, data[3], data[4] high bits, offset 4096
-    int desired_accel = ((((int)msg->data[2] & 0x3) << 11) | (((int)msg->data[3]) << 3) | (((int)msg->data[4]) >> 5)) - 4096;
+    int desired_accel = (((msg->data[2] & 0x3U) << 11U) | (msg->data[3] << 3U) | (msg->data[4] >> 5U)) - 4096U;
     if (!stock_standby && !g46l_armed && longitudinal_accel_checks(desired_accel, MAZDA_LONG_LIMITS)) {
       tx = false;
     }

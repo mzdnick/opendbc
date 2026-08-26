@@ -16,7 +16,7 @@ from opendbc.car.mazda.longitudinal import (ESCORT_DROP_DIST, ESCORT_LEAD_IN_FRA
                                             LEAD_DEBOUNCE_FRAMES, RESUME_UNLATCH_FRAMES,
                                             AdvertisedLead, ResumeEscort, StandstillHold)
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams, G46L_RADAR_FW, MazdaFlags
 
 
 class TestCarControllerParams:
@@ -123,6 +123,26 @@ class TestMazdaLongitudinalMessages:
     dat = mazdacan.create_acc_command(packer, 0, counter, accel, True, False, stopping, unlatching)[1]
     assert dat.hex() == expected
 
+  def test_crz_info_g46l_armed_pins_the_command_high(self, packer):
+    # the G46L pegs the command high whenever it is not engaged, armed included
+    for counter in range(16):
+      checksum = (0xd9 - counter) & 0xff
+      expected = f"01ffe3ffc480{counter:02x}{checksum:02x}"
+      dat = mazdacan.create_acc_command(packer, 0, counter, 0.0, False, True, False, False, g46l=True)[1]
+      assert dat.hex() == expected
+
+  def test_crz_info_g46l_standby_matches_the_capture(self, packer):
+    for counter in range(16):
+      checksum = (0xdd - counter) & 0xff
+      expected = f"01ffe3ffc080{counter:02x}{checksum:02x}"
+      dat = mazdacan.create_acc_command(packer, 0, counter, 0.0, False, False, False, False, g46l=True)[1]
+      assert dat.hex() == expected
+
+  def test_crz_info_g46l_engaged_is_the_kf_path(self, packer):
+    kf = mazdacan.create_acc_command(packer, 0, 3, 2.0, True, False, False, False)[1]
+    g46l = mazdacan.create_acc_command(packer, 0, 3, 2.0, True, False, False, False, g46l=True)[1]
+    assert kf == g46l
+
   def test_crz_info_accel_encoding_and_checksum(self, packer):
     # the packed command must round-trip at the 0.001 factor and carry a valid masked-bit
     # checksum over the whole command window, stop bits set or not
@@ -160,6 +180,11 @@ class TestMazdaLongitudinalMessages:
     ]
     frames = mazdacan.create_radar_frames(0, 0, None)
     assert [(f.address, f.dat.hex()) for f in frames] == expected
+
+  def test_radar_frames_g46l_are_static_only(self):
+    # the G46L never sends track messages; the followed lead rides CRZ_CTRL alone
+    frames = mazdacan.create_radar_frames(0, 5, (mazdacan.LEAD_TRACK_DIST, 0.), g46l=True)
+    assert [(f.address, f.dat.hex()) for f in frames] == [(0x499, "0098400000000000")]
 
   def test_radar_frames_counter_and_lead_track(self):
     frames = mazdacan.create_radar_frames(2, 15, (mazdacan.LEAD_TRACK_DIST, 0.))
@@ -470,6 +495,22 @@ def stock_cc():
   return CarController({Bus.pt: "mazda_2017"}, CP, CP_SP)
 
 
+@pytest.fixture
+def cc_g46l():
+  # a 2016.5 body named CX5_2022 by its donor EPS: the engine corroborates nothing,
+  # the G46L radar carries both the availability and the replay dialect
+  radar_fw = structs.CarParams.CarFw()
+  radar_fw.ecu = structs.CarParams.Ecu.fwdRadar
+  radar_fw.address = 0x764
+  radar_fw.subAddress = 0
+  radar_fw.fwVersion = sorted(G46L_RADAR_FW)[0]
+  CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, {0: {}, 1: {}, 2: {}}, [radar_fw], alpha_long=True,
+                               is_release=False, docs=False)
+  assert CP.openpilotLongitudinalControl and CP.flags & MazdaFlags.G46L_RADAR
+  CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, {0: {}, 1: {}, 2: {}}, [radar_fw], True, False, False)
+  return CarController({Bus.pt: "mazda_2017"}, CP, CP_SP)
+
+
 def _long_frames(sends):
   """(ACCEL_CMD raw, CRZ_INFO.ACC_ACTIVE, CRZ_CTRL.CRZ_ACTIVE) from a bus 0 emission, or None."""
   info = next((d for a, d, b in sends if a == 0x21b and b == 0), None)
@@ -527,6 +568,30 @@ def _step(cc, **kw):
 class TestLongitudinalIntegration:
   """Drives the real CarController.update_longitudinal through an engage -> cruise -> stop ->
   hold -> resume timeline and checks the emitted CAN, not just the state machine in isolation."""
+
+  def test_g46l_emits_no_track_frames(self, cc_g46l):
+    long = structs.CarControl.Actuators.LongControlState
+    addrs = set()
+    for _ in range(100):
+      sends = _step(cc_g46l, long_state=long.pid, accel=-0.5, lead_visible=True)
+      addrs.update(a for a, _, _ in sends)
+    assert not any(0x361 <= a <= 0x366 for a in addrs)
+    assert 0x499 in addrs and 0x21b in addrs and 0x21c in addrs
+
+  def test_g46l_static_is_the_capture_and_the_lead_rides_crz_ctrl(self, cc_g46l):
+    long = structs.CarControl.Actuators.LongControlState
+    statics = set()
+    ctrl = None
+    for _ in range(100):  # past the lead debounce (LEAD_DEBOUNCE_T = 0.5 s)
+      sends = _step(cc_g46l, long_state=long.pid, accel=0.0, lead_visible=True, lead_d_rel=12.0)
+      statics.update(d for a, d, _ in sends if a == 0x499)
+      ctrl = _frame(sends, 0x21c) or ctrl
+    assert statics == {bytes.fromhex("0098400000000000")}
+    assert _crz_ctrl(ctrl) == (1, 2)  # lead visible, follow phase
+
+  def test_g46l_pins_the_command_when_available_but_not_engaged(self, cc_g46l):
+    sends = _step(cc_g46l, long_active=False, available=True, accel=0.0)
+    assert decode_accel_cmd_raw(_frame(sends, 0x21b)) == 4094
 
   def test_engaged_frame_rates_and_counters(self, cc):
     long = structs.CarControl.Actuators.LongControlState

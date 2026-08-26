@@ -6,7 +6,7 @@ from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
 from opendbc.car.mazda.fingerprints import FW_VERSIONS
-from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaSafetyFlags
+from opendbc.car.mazda.values import CAR, DBC, G46L_RADAR_FW, LKAS_LIMITS, MazdaFlags, MazdaSafetyFlags, STEER_TO_ZERO_EPS_FW
 
 KNOWN_RADAR_FW = set().union(*(fw.get((structs.CarParams.Ecu.fwdRadar, 0x764, None), []) for fw in FW_VERSIONS.values()))
 
@@ -39,10 +39,15 @@ class CarInterface(CarInterfaceBase):
     # same FSC camera firmware (GSH7-67XK2-U) as the CX-5 2022 this was developed on.
     # Alpha-long tears the stock radar down and replays its bus, so the body must corroborate
     # the platform through engine firmware the database knows; docs and test builds carry no
-    # firmware and keep the advertised default.
+    # firmware and keep the advertised default. A G46L radar corroborates itself: alpha-long
+    # replays that radar's own dialect, not the 2022 templates.
     engine_fw = FW_VERSIONS[candidate].get((structs.CarParams.Ecu.engine, 0x7e0, None), [])
     engine_corroborated = docs or not car_fw or any(fw.ecu == 'engine' and fw.fwVersion in engine_fw for fw in car_fw)
-    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and engine_corroborated
+    g46l_radar = any(fw.ecu == 'fwdRadar' and fw.fwVersion in G46L_RADAR_FW for fw in car_fw)
+    if g46l_radar:
+      ret.flags |= int(MazdaFlags.G46L_RADAR)
+    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and \
+      (engine_corroborated or g46l_radar)
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
     if ret.openpilotLongitudinalControl:
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.LONG.value

@@ -22,6 +22,10 @@ LEAD_TRACK_DIST = 10.25   # m, the range LEAD_TRACK_TEMPLATE was captured at; no
 DIST_OBJ_SCALE = 0.0625   # m per bit, DIST_OBJ and RELV_OBJ share it
 DIST_OBJ_MAX = 255.875    # m, the full-scale DIST_OBJ reading a track can carry
 
+# The G46L radar (2016.5 bodies) sends only this static frame and no track messages at all;
+# fully static — no counter, no checksum.
+G46L_RADAR_STATIC_MSG = (0x499, bytes.fromhex("0098400000000000"))
+
 
 def crz_info_checksum(dat: bytes) -> int:
   # Inverted sum of the first seven bytes; the radar leaves the STOPPING bit out of the
@@ -29,11 +33,13 @@ def crz_info_checksum(dat: bytes) -> int:
   return (0xFF - ((sum(dat[:7]) - (dat[5] & 0x04)) & 0xFF)) & 0xFF
 
 
-def create_acc_command(packer, bus, counter, accel, long_active, acc_available, stopping, resume_unlatching):
+def create_acc_command(packer, bus, counter, accel, long_active, acc_available, stopping, resume_unlatching,
+                       g46l=False):
   # CRZ_INFO stands in for the disabled radar's accel command frame. While MRCC is armed
   # but not engaged, stock advertises ACC_SET_ALLOWED with a zero command so the dash
   # accepts SET; with the main switch off it broadcasts a static standby pattern with the
-  # command field pegged high.
+  # command field pegged high. The G46L pegs the command high whenever it is not engaged,
+  # armed included.
   values = {
     "STATUS": 1,
     "STATIC_1": 0x7ff,
@@ -41,7 +47,7 @@ def create_acc_command(packer, bus, counter, accel, long_active, acc_available, 
   }
   if long_active or acc_available:
     values.update({
-      "ACCEL_CMD": accel,
+      "ACCEL_CMD": accel if long_active or not g46l else 4.094,
       "ACC_ACTIVE": int(long_active),
       "ACC_SET_ALLOWED": 1,
       "NEW_SIGNAL_7": 1,
@@ -51,6 +57,7 @@ def create_acc_command(packer, bus, counter, accel, long_active, acc_available, 
     })
   else:
     values["ACCEL_CMD"] = 4.094  # standby pattern, raw 8190
+    values["NEW_SIGNAL_7"] = int(g46l)
 
   dat = packer.make_can_msg("CRZ_INFO", bus, values)[1]
   values["CHKSUM"] = crz_info_checksum(dat)
@@ -94,8 +101,11 @@ def create_lead_track(d_rel: float, v_rel: float) -> bytes:
   return bytes(dat)
 
 
-def create_radar_frames(bus, counter, lead):
+def create_radar_frames(bus, counter, lead, g46l=False):
   """lead is the (dRel, vRel) of the object to advertise on 0x364, or None for an empty slot."""
+  if g46l:
+    # the G46L never sends track messages; the lead rides CRZ_CTRL alone
+    return [CanData(G46L_RADAR_STATIC_MSG[0], G46L_RADAR_STATIC_MSG[1], bus)]
   frames = [CanData(RADAR_STATIC_MSG[0], RADAR_STATIC_MSG[1], bus)]
   for addr, dat in RADAR_TRACK_MSGS.items():
     if lead is not None and addr == LEAD_TRACK_ADDR:

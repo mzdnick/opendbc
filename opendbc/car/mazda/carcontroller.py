@@ -7,7 +7,7 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.longitudinal import (RADAR_ADDR, AdvertisedLead, RadarSessionManager, RadarSessionState,
                                             StandstillHold, create_radar_session_msg)
-from opendbc.car.mazda.values import CarControllerParams, Buttons
+from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags
 
 from opendbc.sunnypilot.car.mazda.icbm import IntelligentCruiseButtonManagementInterface
 
@@ -32,6 +32,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.long_counter = 0
     self.radar_counter = 0
     self.radar_session = RadarSessionManager()
+    self.g46l = bool(CP.flags & MazdaFlags.G46L_RADAR)
     self.accel_last = 0.
 
   def update(self, CC, CC_SP, CS, now_nanos):
@@ -178,7 +179,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
 
     if radar_master and self.frame % CarControllerParams.RADAR_STEP == 0:
       for bus in LONG_BUSES:
-        can_sends.extend(mazdacan.create_radar_frames(bus, self.radar_counter, self.lead_adv.lead))
+        can_sends.extend(mazdacan.create_radar_frames(bus, self.radar_counter, self.lead_adv.lead, g46l=self.g46l))
       self.radar_counter += 1
 
     if radar_master and self.frame % CarControllerParams.LONG_STEP == 0:
@@ -189,7 +190,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       for bus in LONG_BUSES:
         can_sends.append(mazdacan.create_acc_command(self.packer, bus, self.long_counter, accel,
                                                      long_engaged, acc_available,
-                                                     stopping=sm.stop_bits, resume_unlatching=sm.resume_unlatching))
+                                                     stopping=sm.stop_bits, resume_unlatching=sm.resume_unlatching,
+                                                     g46l=self.g46l))
         can_sends.append(mazdacan.create_crz_ctrl(self.packer, bus, long_engaged, acc_available, gap,
                                                   self.lead_adv.has_lead, self.lead_adv.ctrl_phase,
                                                   acc_active_2))

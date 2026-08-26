@@ -4,7 +4,7 @@ from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda.fingerprints import FW_VERSIONS
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW
+from opendbc.car.mazda.values import CAR, G46L_RADAR_FW, LKAS_LIMITS, MazdaFlags, STEER_TO_ZERO_EPS_FW
 
 Ecu = structs.CarParams.Ecu
 
@@ -13,6 +13,7 @@ SWAPPED_EPS_FW = sorted(STEER_TO_ZERO_EPS_FW)[0]
 STOCK_CX5_EPS_FW = b'K319-3210X-A-00' + b'\x00' * 9
 UNKNOWN_RADAR_FW = b'ZZ99-5555X-Z-99' + b'\x00' * 9
 UNKNOWN_ENGINE_FW = b'ZZ99-9999X-Z-99' + b'\x00' * 9
+G46L_FW = sorted(G46L_RADAR_FW)[0]
 
 
 def _fw(ecu, address: int, version: bytes) -> structs.CarParams.CarFw:
@@ -100,6 +101,21 @@ class TestMazdaEpsSwap:
     CP = _params(CAR.MAZDA_CX9_2021, _eps_fw(SWAPPED_EPS_FW) + [_fw(Ecu.engine, 0x7e0, engine)],
                  alpha_long=True)
     assert CP.alphaLongitudinalAvailable
+
+  def test_g46l_radar_unlocks_alpha_long_in_its_own_dialect(self):
+    # the 2016.5 body: the donor EPS names it CX5_2022, the engine corroborates nothing,
+    # and the G46L radar carries the replay dialect alpha-long speaks instead
+    CP = _params(CAR.MAZDA_CX5_2022, _eps_fw(SWAPPED_EPS_FW) + [_fw(Ecu.engine, 0x7e0, UNKNOWN_ENGINE_FW),
+               _fw(Ecu.fwdRadar, 0x764, G46L_FW)], alpha_long=True)
+    assert CP.alphaLongitudinalAvailable
+    assert CP.openpilotLongitudinalControl
+    assert CP.flags & MazdaFlags.G46L_RADAR
+    assert CP.radarUnavailable  # unknown to the fingerprint tables, so vision-only radar
+
+  def test_g46l_flag_is_set_without_alpha_long(self):
+    CP = _params(CAR.MAZDA_CX5_2022, [_fw(Ecu.fwdRadar, 0x764, G46L_FW)])
+    assert CP.flags & MazdaFlags.G46L_RADAR
+    assert not CP.openpilotLongitudinalControl
 
   def test_swapped_eps_keeps_the_real_vehicle_specs(self):
     # the whole point of fixing detection is that the user no longer forces MAZDA_CX5_2022 and

@@ -101,6 +101,8 @@ class MazdaFlags(IntFlag):
   # Static flags
   # Gen 1 hardware: same CAN messages and same camera
   GEN1 = 1
+  # 2016.5-era radar: alpha-long replays its dialect (static 0x499, no track frames)
+  G46L_RADAR = 2
 
 
 class MazdaSafetyFlags(IntFlag):
@@ -169,6 +171,13 @@ class LKAS_LIMITS:
 STEER_TO_ZERO_EPS_FW = {
   b'KBST-3210X-A-00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
   b'KSD5-3210X-C-00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+}
+
+# The 2016.5-era radar kept by an EPS-swapped older body. Deliberately absent from
+# fingerprints.py: unknown fw keeps the vision-only path, and alpha-long replays this
+# radar's own dialect instead of the 2022 templates (mazdacan.py).
+G46L_RADAR_FW = {
+  b'G46L-67XA1-C\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
 }
 
 class Buttons:

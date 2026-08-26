@@ -150,7 +150,8 @@ class CAR(Platforms):
   )
   MAZDA_CX5_2022 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-5 2022-25")],
-    MazdaCX5_2022CarSpecs(mass=3728 * CV.LB_TO_KG, wheelbase=2.698, steerRatio=18.1),  # 15.5 is factory spec; 18.1 from paramsd learner (2.9M samples)
+    # 15.5 is factory spec; 18.1 from paramsd learner (2.9M samples)
+    MazdaCX5_2022CarSpecs(mass=3728 * CV.LB_TO_KG, wheelbase=2.698, steerRatio=18.1),
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'KF'}, years={'N', 'P', 'R', 'S'},  # 2022-25
   )
 
@@ -191,7 +192,8 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
     candidates = set()
     for platform in CAR:
       platform_config = platform.config
-      if vin_obj.wmi in platform_config.wmis and chassis_code in platform_config.chassis_codes and year in platform_config.years:
+      if (vin_obj.wmi in platform_config.wmis and chassis_code in platform_config.chassis_codes
+          and year in platform_config.years):
         candidates.add(platform)
 
     if len(candidates) == 1:
@@ -234,7 +236,8 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
   if len(eps_candidates) == 1:
     eps_platform = next(iter(eps_candidates))
     if vin_obj is not None:
-      chassis_platforms = {p for p in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) if vin_obj.vds[0:2] in p.config.chassis_codes}
+      chassis_platforms = {p for p in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021)
+                           if vin_obj.vds[0:2] in p.config.chassis_codes}
       if len(chassis_platforms) == 1:
         eps_platform = next(iter(chassis_platforms))
     carlog.error(f"Fingerprinted {eps_platform} by donor EPS firmware")

@@ -58,13 +58,13 @@ class RadarInterface(RadarInterfaceBase):
       msg = self.rcp.vl[f"RADAR_TRACK_{addr:x}"]
 
       dist = msg['DIST_OBJ']
-      ang = msg['ANG_OBJ']
+      angle = msg['ANG_OBJ']
       relv = msg['RELV_OBJ']
 
       # Empty slots have all three fields set to sentinel values.
       # Also skip tracks whose RELV encoding is not yet decoded — without
       # a valid vRel the downstream Kalman filter and MPC solver break.
-      if dist == SENTINEL_DIST or ang == SENTINEL_ANG or relv == SENTINEL_RELV \
+      if dist == SENTINEL_DIST or angle == SENTINEL_ANG or relv == SENTINEL_RELV \
          or addr not in RADAR_USABLE_ADDRS:
         if addr in self.pts:
           del self.pts[addr]
@@ -75,7 +75,7 @@ class RadarInterface(RadarInterfaceBase):
         self.pts[addr].trackId = self.track_id
         self.track_id += 1
 
-      azimuth = math.radians(ang)
+      azimuth = math.radians(angle)
       self.pts[addr].dRel = math.cos(azimuth) * dist
       self.pts[addr].yRel = -math.sin(azimuth) * dist
       self.pts[addr].vRel = relv

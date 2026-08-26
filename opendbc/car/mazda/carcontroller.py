@@ -23,6 +23,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
   def __init__(self, dbc_names, CP, CP_SP):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
     IntelligentCruiseButtonManagementInterface.__init__(self, CP, CP_SP)
+    if not CP.flags & MazdaFlags.GEN1:
+      # every message builder in mazdacan assumes the GEN1 frame layouts; a new platform
+      # needs its own before it can be admitted
+      raise NotImplementedError(f"unsupported platform: {CP.carFingerprint}")
     self.params = CarControllerParams(CP)
     self.apply_torque_last = 0
     self.packer = CANPacker(dbc_names[Bus.pt])
@@ -124,15 +128,15 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
   def update_longitudinal(self, CC, CC_SP, CS):
     can_sends = []
 
-    # Radar session sequencing: hold off the teardown until the FSC's cold-boot
-    # radar-presence check has cleared (carstate's settle timer), keep the radar in its
-    # programming session while we own the bus, and on an onroad toggle-off return it
-    # to the default session before card requests the process restart. Never yank the
-    # radar out from under an active stock MRCC engagement (driver SET before the gate
-    # passed on a warm boot): wait for the driver to disengage first.
+    # Radar session sequencing (the why lives on RadarSessionManager): hold off the takeover
+    # until the FSC's cold-boot radar-presence check has cleared, and never yank the radar
+    # out from under an active stock MRCC engagement (driver SET before the gate passed on a
+    # warm boot) -- wait for the driver to disengage first.
     stock_radar_alive = CS.stock_radar_alive
-    teardown_ok = CS.fsc_settled and not (stock_radar_alive and CS.out.cruiseState.enabled)
-    session_state = self.radar_session.update(teardown_ok, stock_radar_alive, CC_SP.stockEcuHandBack)
+    setup_ok = CS.fsc_settled and not (stock_radar_alive and CS.out.cruiseState.enabled)
+    session_state = self.radar_session.update(setup_ok, stock_radar_alive, CC_SP.stockEcuHandBack,
+                                              standstill=CS.out.standstill,
+                                              session_refused=CS.radar_session_refused)
     # synthetic radar frames flow while we own the bus, and keep flowing through the
     # hand-back so the camera never sees a radar gap
     radar_master = session_state in (RadarSessionState.SILENCED, RadarSessionState.HANDBACK)
@@ -147,18 +151,19 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         can_sends.append(make_tester_present_msg(RADAR_ADDR, 0, suppress_response=True))
 
     stopping = CC.actuators.longControlState == LongCtrlState.stopping
-    # A gas press is an override, not a disengagement. The command goes to zero as everywhere
-    # else, but the engaged bits stay set off CC.enabled the way Honda drives ACC_CONTROL's
-    # CONTROL_ON. Clearing them mid-decel takes the PCM out of ACC mode as the driver adds
-    # throttle, so a light pedal input lands as a lurch and a rev flare; stock MRCC holds them
-    # through 9 of 11 decel overrides (analyze_gas_override.py, 576 stock segments).
-    gas_override = CC.enabled and (CC.cruiseControl.override or CS.out.gasPressed)
-    long_engaged = CC.longActive or gas_override
+    # The engaged bits follow CC.enabled the way Honda drives ACC_CONTROL's CONTROL_ON: a gas
+    # press is an override, not a disengagement, so enabled holds while controlsd drops
+    # longActive and the command goes to zero. Clearing the bits mid-decel takes the PCM out
+    # of ACC mode as the driver adds throttle, so a light pedal input lands as a lurch and a
+    # rev flare; stock MRCC holds them through 9 of 11 decel overrides (analyze_gas_override.py,
+    # 576 stock segments). (MADS lateral-only sits outside CC.enabled, so this stays False
+    # with cruise off.)
+    long_engaged = CC.enabled
     sm = self.stop_and_go
     sm.update(long_engaged, stopping, CS.out.standstill, CC.actuators.accel, CS.brake_hold,
-              real_lead=self.lead_adv.real_lead)
-    # after the hold: the advertised phase is a stop phase only while we are actually holding
-    self.lead_adv.update(long_engaged, CC.hudControl.leadVisible, CC_SP.leadOne.dRel,
+              gas_pressed=CS.out.gasPressed, real_lead=self.lead_adv.real_lead)
+    # runs engaged or not: the advertisement is perception (see AdvertisedLead)
+    self.lead_adv.update(CC.hudControl.leadVisible, CC_SP.leadOne.dRel,
                          CC_SP.leadOne.vRel, sm.holding, escort=sm.escort.lead)
 
     accel = 0.

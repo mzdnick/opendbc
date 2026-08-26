@@ -28,6 +28,9 @@ class RadarSessionState(StrEnum):
   HANDBACK = "handback"    # requesting the default session; synthetic frames continue
 
 
+RADAR_SESSION_LIMIT_FRAMES = int(CarControllerParams.RADAR_SESSION_LIMIT_T / DT_CTRL)
+
+
 class RadarSessionManager:
   """Sequences the radar in and out of its UDS programming session.
 
@@ -40,19 +43,31 @@ class RadarSessionManager:
   pandad blocks TX within ~100 ms of an onroad cycle starting, so the hand-back
   runs from the control loop and the restart is requested only once the stock
   radar is heard again (back to STOCK, nothing transmitted).
+
+  The session request is fire-and-forget, so a refusal (NRC) is indistinguishable
+  from a lost frame; both silencing and the hand-back are therefore bounded the
+  way disable_ecu bounds its retries. A silencing episode that never quiets the
+  radar gives up for the drive and stock keeps the bus; a hand-back the radar
+  never answers stops waiting so the process restart can proceed.
   """
 
   def __init__(self):
     self.state = RadarSessionState.STOCK
+    self.state_frames = 0
+    self.silencing_failed = False
 
-  def update(self, gate_passed: bool, stock_radar_alive: bool, handback: bool) -> RadarSessionState:
+  def update(self, gate_passed: bool, stock_radar_alive: bool, handback: bool,
+             standstill: bool, session_refused: bool = False) -> RadarSessionState:
+    prev_state = self.state
     if handback:
       if self.state == RadarSessionState.SILENCING:
         # nothing was torn down yet; just stop touching the bus
         self.state = RadarSessionState.STOCK
       elif self.state == RadarSessionState.SILENCED:
         self.state = RadarSessionState.HANDBACK
-      elif self.state == RadarSessionState.HANDBACK and stock_radar_alive:
+      elif self.state == RadarSessionState.HANDBACK and \
+           (stock_radar_alive or self.state_frames >= RADAR_SESSION_LIMIT_FRAMES):
+        # heard again, or never coming back: either way stop waiting so the restart proceeds
         self.state = RadarSessionState.STOCK
     else:
       if self.state == RadarSessionState.HANDBACK:
@@ -60,18 +75,41 @@ class RadarSessionManager:
         # stock again, so re-run the normal takeover
         self.state = RadarSessionState.STOCK
       if self.state == RadarSessionState.STOCK and gate_passed:
-        self.state = RadarSessionState.SILENCING if stock_radar_alive else RadarSessionState.SILENCED
-      elif self.state == RadarSessionState.SILENCING and not stock_radar_alive:
-        self.state = RadarSessionState.SILENCED
+        # actively silencing disables AEB, so like every disable_ecu caller it only starts
+        # pre-motion; adopting an already-quiet radar disables nothing and proceeds anywhere
+        if not stock_radar_alive:
+          self.state = RadarSessionState.SILENCED
+        elif standstill and not self.silencing_failed:
+          self.state = RadarSessionState.SILENCING
+      elif self.state == RadarSessionState.SILENCING:
+        if not stock_radar_alive:
+          self.state = RadarSessionState.SILENCED
+        elif session_refused or self.state_frames >= RADAR_SESSION_LIMIT_FRAMES:
+          # a negative UDS response is a definitive refusal, the silence budget covers a
+          # radar that answers nothing at all; either way give up for the drive and stock
+          # keeps the bus (disable_ecu reads the same response to declare its outcome)
+          self.state = RadarSessionState.STOCK
+          self.silencing_failed = True
       elif self.state == RadarSessionState.SILENCED and stock_radar_alive:
-        # the radar S3-recovered (e.g. a dropped tester present); re-silence it
+        # the radar S3-recovered (e.g. a dropped tester present); re-silence it without
+        # waiting for a stop: two masters on the bus is the greater hazard, this radar has
+        # already accepted sessions this drive, and a refusal still exits through the
+        # bounded SILENCING episode above
         self.state = RadarSessionState.SILENCING
 
+    self.state_frames = 0 if self.state != prev_state else self.state_frames + 1
     return self.state
 
 
 RESUME_UNLATCH_FRAMES = int(CarControllerParams.RESUME_UNLATCH_T / DT_CTRL)
 LEAD_DEBOUNCE_FRAMES = int(CarControllerParams.LEAD_DEBOUNCE_T / DT_CTRL)
+
+# Trial (2026-08-26): the escort is off to attribute route 000000fe's fault. That release had
+# two deviations from stock, not one: no advertised object AND a 0.20 s unlatch pulse below
+# stock's observed 0.22-0.38 s floor; the pulse now sits mid-distribution. A clean no-lead
+# resume here means the camera never needed the object and the escort can be deleted; a fault
+# proves the object requirement single-variable and the escort comes back on.
+ESCORT_ENABLED = False
 
 # The escort ghost's kinematics; single consumer, so they live with it
 ESCORT_LEAD_IN_FRAMES = int(0.3 / DT_CTRL)  # the ghost pulls away this long before the release fires
@@ -165,25 +203,23 @@ class StandstillHold:
     self.unlatch_frames = 0
     self.escort.reset()
 
-  def update(self, long_active: bool, stopping: bool, standstill: bool,
-             plan_accel: float, brake_hold: bool,
+  def update(self, long_engaged: bool, stopping: bool, standstill: bool,
+             plan_accel: float, brake_hold: bool, gas_pressed: bool,
              real_lead: tuple[float, float] | None = None) -> None:
-    if not long_active:
+    if not long_engaged:
       self._reset()
       return
 
     was_holding = self.holding
-    self.escort.update(self.holding and plan_accel > 0., standstill, real_lead)
-    # the plan asking for acceleration releases the hold; so does the car simply moving with
-    # the plan no longer stopping (a driver-gas drive-off under an override, where the plan's
-    # command is zeroed and would otherwise never ask). Stock keeps STOPPING strictly to the
-    # final creep: 2,078 rolling STOPPING frames in the corpus, all below 0.55 m/s.
-    if plan_accel > 0. and not self.escort.deferring:
-      self.holding = False
-    elif stopping or standstill:
-      self.holding = True
-    else:
-      self.holding = False
+    self.escort.update(ESCORT_ENABLED and self.holding and plan_accel > 0., standstill, real_lead)
+    # the plan asking for acceleration releases the hold, and so does the driver's pedal:
+    # Toyota's PCM lets the pedal outrank its standstill request the same way. Holding the
+    # stop bits against the throttle until the car physically moved put an out-of-protocol
+    # release on the bus, stop bits dropping at speed with no unlatch pulse (route 0000004d
+    # t+210.9). Stock keeps STOPPING strictly to the final creep: 2,078 rolling STOPPING
+    # frames in the corpus, all below 0.55 m/s.
+    release = gas_pressed or (plan_accel > 0. and not self.escort.deferring)
+    self.holding = not release and (stopping or standstill)
 
     if self.unlatch_frames > 0:
       self.unlatch_frames -= 1
@@ -216,7 +252,15 @@ class AdvertisedLead:
   with all six slots empty, and has_lead=0 always came with phase=0 -- so they are read off one
   piece of state here rather than computed separately and kept in step by hand.
 
-  Two things make that state more than a copy of leadVisible. A marginal vision lead flickers
+  The state is perception, not control: a stock radar reports its objects ignition to ignition,
+  and stock shows RADAR_HAS_LEAD=1 with cruise disengaged in 19.5% of all frames. Tying the
+  advertisement to engagement instead made a real car 4.5 m ahead vanish from the bus in one
+  frame when the driver braked out of a creep (route 0000004d t+212); the camera, still watching
+  the car close in its own vision, ran its SCBS display six seconds -- a pattern absent from
+  50 h of stock driving. So this updates every control frame, engaged or not, for as long as we
+  stand in for the radar.
+
+  Two things make the state more than a copy of leadVisible. A marginal vision lead flickers
   faster than any real radar ever would (route 6bb2dc61c4 t+400: 6 toggles in 1.4 s on a 120 m
   lead), so visibility is adopted only once it has held steady, the way Hyundai debounces its
   lead bit. And leadOne drops to zero the instant vision loses the lead, well before that
@@ -226,9 +270,6 @@ class AdvertisedLead:
   """
 
   def __init__(self):
-    self._reset()
-
-  def _reset(self):
     self.visible = False
     self.flip_frames = 0
     self.holding = False
@@ -236,12 +277,8 @@ class AdvertisedLead:
     self.real_lead = None
     self._measured = None
 
-  def update(self, long_engaged: bool, lead_visible: bool, d_rel: float, v_rel: float,
+  def update(self, lead_visible: bool, d_rel: float, v_rel: float,
              holding: bool, escort: tuple[float, float] | None = None) -> None:
-    if not long_engaged:
-      self._reset()
-      return
-
     if lead_visible != self.visible:
       self.flip_frames += 1
       if self.flip_frames >= LEAD_DEBOUNCE_FRAMES:
@@ -252,10 +289,20 @@ class AdvertisedLead:
 
     if 0. < d_rel <= mazdacan.DIST_OBJ_MAX:
       self._measured = (d_rel, v_rel)
+    elif not self.visible:
+      # a real radar drops a coasted track; expiring here bounds the coast to the debounce
+      # window and keeps a minutes-stale measurement from resurfacing on reacquisition
+      self._measured = None
+    elif self._measured is not None:
+      # propagate through the gap rather than repeating one frozen frame; a stock radar
+      # re-measures every track every 100 ms, and a frozen range with the car moving is the
+      # camera's proven SCBS trigger (create_lead_track's docstring)
+      d, v = self._measured
+      self._measured = (d + v * DT_CTRL, v)
     # the escort stands in only when there is nothing real to advertise, so has_lead, the
     # phase and the track still come off this one decision
     self.real_lead = self._measured if self.visible else None
-    self.lead = self.real_lead if self.real_lead is not None else escort
+    self.lead = self.real_lead or escort
     self.holding = holding
 
   @property
@@ -264,9 +311,10 @@ class AdvertisedLead:
 
   @property
   def ctrl_phase(self) -> int:
-    # RADAR_LEAD_RELATIVE_DISTANCE: 0 nothing to describe, 1 cruise, 2 follow, 3 stop/hold.
-    # We shipped has_lead=0 with phase=1 for 22-84% of every engaged drive before this was a
-    # read off the advertised lead instead of a second, separate computation.
+    # RADAR_LEAD_RELATIVE_DISTANCE is stock's 1-5 closeness bucket for the lead, broadcast
+    # engaged or not (hl=0 <=> phase=0 holds cruise-off too). We emit 2 following and 3 near
+    # a hold: both in-distribution (3 is stock's dominant standstill value), and no fault has
+    # ever keyed on the bucket value, only on the triple disagreeing.
     if not self.has_lead:
       return 0
     return 3 if self.holding else 2

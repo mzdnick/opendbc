@@ -78,6 +78,59 @@ class TestFscSettleGate:
     assert not CI.CS.fsc_settled
 
 
+class TestStockFcw:
+  """0x21d (CAM_EMPTY) idles at STATUS 0x7f and leaves it only while the camera actively
+  shows its SCBS collision display (route 0000004d t+213). The payloads are the captured
+  idle and active frames from that route."""
+
+  IDLE = bytes.fromhex("7f3fff00000affff")
+  ACTIVE = bytes.fromhex("52124b00000ad294")
+
+  def _feed_21d(self, CI, payload, i=0):
+    ret, _ = CI.update([(int(i * DT_CTRL * 1e9), [(0x21d, payload, 2)])])
+    return ret
+
+  def test_display_active_sets_fcw(self):
+    CI = _interface()
+    assert self._feed_21d(CI, self.IDLE).stockFcw is False
+    assert self._feed_21d(CI, self.ACTIVE, 1).stockFcw is True
+    assert self._feed_21d(CI, self.IDLE, 2).stockFcw is False
+
+  def test_no_fcw_before_first_camera_frame(self):
+    # the parser reads STATUS as 0 before the first frame, which is != 0x7f
+    CI = _interface()
+    ret, _ = CI.update([(0, [])])
+    assert ret.stockFcw is False
+
+  def test_ped_warning_bit_sets_fcw(self):
+    # never observed in 1.57M corpus frames, wired for coverage: PED_WARNING is bit 9
+    CI = _interface()
+    self._feed_21d(CI, self.IDLE)
+    ret, _ = CI.update([(int(1 * DT_CTRL * 1e9), [(0x25d, bytes.fromhex("07fa3c0000000000"), 2), (0x21d, self.IDLE, 2)])])
+    assert ret.stockFcw is True
+
+
+class TestRadarSessionResponse:
+  """The radar answers session requests within ~10 ms (route 000000fe t+15.0); a negative
+  response is a definitive refusal the session manager acts on immediately."""
+
+  def test_negative_response_sets_refused(self):
+    CI = _interface()
+    assert not CI.CS.radar_session_refused
+    # 03 7F 10 22: conditionsNotCorrect to a session-control request
+    CI.update([(0, [(0x76c, bytes.fromhex("037f102200000000"), 0)])])
+    assert CI.CS.radar_session_refused
+    for i in range(1, int(CarControllerParams.RADAR_NRC_FRESH_T / DT_CTRL) + 2):
+      CI.update([(int(i * DT_CTRL * 1e9), [])])
+    assert not CI.CS.radar_session_refused, "a refusal must expire"
+
+  def test_positive_response_is_not_a_refusal(self):
+    CI = _interface()
+    # the real capture: 06 50 02 with the session parameter record (P2*=5.0 s)
+    CI.update([(0, [(0x76c, bytes.fromhex("065002001901f400"), 0)])])
+    assert not CI.CS.radar_session_refused
+
+
 class TestBrakeHold:
   """GEAR.BRAKE_HOLD is the body ECU reporting that it owns the standstill hold. Stock relaxes
   its own command the instant this sets, so the payloads below come straight off the two logs
@@ -156,7 +209,8 @@ class TestCamParserLiveness:
   """A first-gen (KE) camera on an EPS-swap build sends no CAM_TRAFFIC_SIGNS: 0 frames in
   22.6 s while CAM_LANEINFO ran at 2 Hz (user log, KE CX-5 with a 2022 EPS, 2026-08-24). The
   missing frame permanently failed can_valid and raised canError, which the UI words as
-  "Unknown Vehicle Variant". CAM_LANEINFO alone carries camera-bus liveness."""
+  "Unknown Vehicle Variant". Liveness rides the frames this camera does send: CAM_LANEINFO
+  at 2 Hz plus CAM_EMPTY and CAM_PEDESTRIAN at ~25 Hz (SweetLog_radarAgain census)."""
 
   def test_camera_bus_valid_without_traffic_signs(self):
     from opendbc.can import CANPacker
@@ -164,7 +218,10 @@ class TestCamParserLiveness:
     CI = _interface()
     for i in range(int(6.0 / DT_CTRL)):
       lkas = packer.make_can_msg("CAM_LKAS", 2, {"CTR": i % 16})
-      CI.update([(int(i * DT_CTRL * 1e9), [(CAM_LANEINFO, SETTLED, 2), (lkas[0], lkas[1], lkas[2])])])
+      cam_empty = (0x21D, bytes.fromhex("7f3fff000000ffff"), 2)
+      cam_pedestrian = (0x25D, bytes.fromhex("07f83d6c00000000"), 2)
+      CI.update([(int(i * DT_CTRL * 1e9),
+                  [(CAM_LANEINFO, SETTLED, 2), (lkas[0], lkas[1], lkas[2]), cam_empty, cam_pedestrian])])
     assert CI.can_parsers[Bus.cam].can_valid
     # the explicit nan entry is load-bearing: deleting it re-registers the
     # message as required through carstate_ext's lazy vl read

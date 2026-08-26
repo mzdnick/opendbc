@@ -11,6 +11,8 @@ FSC_SETTLE_FRAMES = int(CarControllerParams.FSC_SETTLE_T / DT_CTRL)
 STOCK_RADAR_ALIVE_FRAMES = int(CarControllerParams.STOCK_RADAR_ALIVE_T / DT_CTRL)
 STOCK_RADAR_GUARD_FRAMES = int(CarControllerParams.STOCK_RADAR_GUARD_T / DT_CTRL)
 CANCEL_CONTEXT_FRAMES = int(CarControllerParams.CANCEL_CONTEXT_T / DT_CTRL)
+CAM_LANEINFO_FRESH_FRAMES = int(CarControllerParams.CAM_LANEINFO_FRESH_T / DT_CTRL)
+RADAR_NRC_FRESH_FRAMES = int(CarControllerParams.RADAR_NRC_FRESH_T / DT_CTRL)
 
 
 class CarState(CarStateBase, CarStateExt):
@@ -39,6 +41,9 @@ class CarState(CarStateBase, CarStateExt):
     self.radar_was_silenced = False
     self.cancel_context_frames = 0
     self.cam_laneinfo_seen = False
+    self.cam_laneinfo_silent_frames = 0
+    self.cam_empty_seen = False
+    self.radar_nrc_frames = RADAR_NRC_FRESH_FRAMES
     self.fsc_settled_frames = 0
     # the body ECU has taken the standstill hold over and is holding the brakes itself
     self.brake_hold = False
@@ -50,6 +55,10 @@ class CarState(CarStateBase, CarStateExt):
   @property
   def stock_radar_alive(self) -> bool:
     return self.stock_radar_silent_frames < STOCK_RADAR_ALIVE_FRAMES
+
+  @property
+  def radar_session_refused(self) -> bool:
+    return self.radar_nrc_frames < RADAR_NRC_FRESH_FRAMES
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -65,7 +74,11 @@ class CarState(CarStateBase, CarStateExt):
       cp.vl["WHEEL_SPEEDS"]["RR"],
     )
 
-    # Match panda speed reading
+    # Match panda speed reading. standstill deliberately comes off ENGINE_DATA while vEgo
+    # comes off WHEEL_SPEEDS: panda's vehicle_moving reads the same ENGINE_DATA field, so the
+    # two agree on when the car counts as stopped -- and standstill is load-bearing for the
+    # longitudinal hold, so the ~0.03 m/s disagreement with vEgo at the stop is the price of
+    # that parity
     speed_kph = cp.vl["ENGINE_DATA"]["SPEED"]
     ret.standstill = speed_kph <= .1
 
@@ -108,6 +121,30 @@ class CarState(CarStateBase, CarStateExt):
     else:
       self.lkas_allowed_speed = True
 
+    # CAM_LANEINFO freshness, same shape as stock_radar_silent_frames below: before the
+    # first frame the parser reads all-zero, and through a camera dropout it repeats stale
+    # values; neither may drive the FSC settle gate or invalidLkasSetting
+    if len(cp_cam.vl_all["CAM_LANEINFO"]["LANE_LINES"]) > 0:
+      self.cam_laneinfo_seen = True
+      self.cam_laneinfo_silent_frames = 0
+    else:
+      self.cam_laneinfo_silent_frames += 1
+    cam_laneinfo_fresh = self.cam_laneinfo_seen and self.cam_laneinfo_silent_frames < CAM_LANEINFO_FRESH_FRAMES
+
+    # Camera SCBS warning -> stockFcw, which upstream logs without mapping an alert. 0x21d
+    # leaves its idle 0x7f status only while actively showing the collision display (one
+    # observed episode: route 0000004d t+213, a disengaged creep to 4.5 m behind a lead;
+    # zero episodes in 50 h of stock cruising), so future SCBS reports are diagnosable from
+    # a qlog. The DBC-named warning bits ride along for coverage; they have never fired in
+    # 1.57M corpus frames. stockAeb is deliberately not mapped: every candidate signal has
+    # zero observed activations, and unknown 0x25d states provably excurse benignly (b4
+    # runs 3 for the camera's first ~5.8 s every boot) -- too weak a basis for a critical
+    # full-screen BRAKE alert.
+    self.cam_empty_seen |= len(cp_cam.vl_all["CAM_EMPTY"]["STATUS"]) > 0
+    ped = cp_cam.vl["CAM_PEDESTRIAN"]
+    ret.stockFcw = (self.cam_empty_seen and cp_cam.vl["CAM_EMPTY"]["STATUS"] != 0x7F) or \
+                   ped["PED_WARNING"] == 1 or ped["BRAKE_WARNING"] == 1
+
     if self.CP.openpilotLongitudinalControl:
       # The radar teardown silences the radar-owned CRZ_CTRL frame, so cruise state comes
       # from PEDALS: ACC_OFF means MRCC is armed but idle, ACC_ACTIVE means it is engaged.
@@ -145,11 +182,21 @@ class CarState(CarStateBase, CarStateExt):
       #  - After the radar has been silenced once, hearing it again is a genuine
       #    two-master conflict (dropped tester present, S3 recovery, or the ordered
       #    hand-back) and is a real accFaulted. The alpha-long toggle monitor relies on
-      #    exactly this edge as its "stock radar heard" acknowledgement.
+      #    exactly this edge as its "stock radar heard" acknowledgment.
       if len(cp.vl_all["CRZ_INFO"]["CTR1"]) > 0:
         self.stock_radar_silent_frames = 0
       else:
         self.stock_radar_silent_frames += 1
+
+      # The radar answers every session request within ~10 ms (route 000000fe t+15.0: request
+      # 02 10 02, response 06 50 02 with P2* = 5.0 s, the S3 timeout). A negative response to
+      # the session request (7F 10 xx) is a definitive refusal, so the session manager can
+      # give up immediately instead of burning its silence budget -- the same response
+      # disable_ecu reads to declare success or failure.
+      refused = any(sid == 0x7F and sub == 0x10
+                    for sid, sub in zip(cp.vl_all["RADAR_UDS_RESPONSE"]["SID"],
+                                        cp.vl_all["RADAR_UDS_RESPONSE"]["SUB"], strict=True))
+      self.radar_nrc_frames = 0 if refused else min(self.radar_nrc_frames + 1, RADAR_NRC_FRESH_FRAMES)
       silenced = self.stock_radar_silent_frames >= STOCK_RADAR_GUARD_FRAMES
       ret.accFaulted = self.radar_was_silenced and not silenced
       self.radar_was_silenced |= silenced
@@ -170,9 +217,8 @@ class CarState(CarStateBase, CarStateExt):
       # BIT2 latched high and NO_ERR_BIT clear for a whole ignition cycle. That pinned the
       # timer at zero, so the radar was never silenced and the two-master guard held
       # accFaulted for the entire drive with nothing to tell the driver why.
-      self.cam_laneinfo_seen |= len(cp_cam.vl_all["CAM_LANEINFO"]["LANE_LINES"]) > 0
       laneinfo = cp_cam.vl["CAM_LANEINFO"]
-      settled = self.cam_laneinfo_seen and not any(laneinfo[s] for s in ("NO_ERR_BIT", "ERR_BIT"))
+      settled = cam_laneinfo_fresh and not (laneinfo["NO_ERR_BIT"] or laneinfo["ERR_BIT"])
       self.fsc_settled_frames = self.fsc_settled_frames + 1 if settled else 0
     else:
       # TODO: the signal used for available seems to be the adaptive cruise signal, instead of the main on
@@ -192,7 +238,7 @@ class CarState(CarStateBase, CarStateExt):
 
     # stock lkas should be on
     # TODO: is this needed?
-    ret.invalidLkasSetting = cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
+    ret.invalidLkasSetting = cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
 
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:
@@ -209,6 +255,7 @@ class CarState(CarStateBase, CarStateExt):
     else:
       # CX-5 2022: EPS accepts steering at all speeds regardless of LKAS_BLOCK.
       # Verified across 5.5M frames: LKAS_BLOCK never indicates a real steering failure.
+      # (minSteerSpeed == 0 is the "2022+ EPS present" marker, here and in CarControllerParams)
       ret.steerFaultTemporary = False
 
     self.acc_active_last = ret.cruiseState.enabled
@@ -256,14 +303,17 @@ class CarState(CarStateBase, CarStateExt):
   def get_can_parsers(CP, CP_SP):
     pt_messages = []
     if CP.openpilotLongitudinalControl:
-      # no liveness check: the stock frame is expected to disappear after the radar
-      # teardown, and its presence is what the two-master guard watches for
+      # no liveness checks: the stock frame is expected to disappear after the radar
+      # teardown (its presence is what the two-master guard watches for), and the UDS
+      # response only arrives when a session request is answered
       pt_messages.append(("CRZ_INFO", float("nan")))
+      pt_messages.append(("RADAR_UDS_RESPONSE", float("nan")))
     cam_messages = [
       # read through vl_all, which unlike vl has no lazy registration
       ("CAM_LANEINFO", 0),
       # the first-gen (KE) camera never sends this frame; liveness stays on CAM_LANEINFO
       ("CAM_TRAFFIC_SIGNS", float("nan")),
+      ("CAM_EMPTY", 0),
     ]
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),

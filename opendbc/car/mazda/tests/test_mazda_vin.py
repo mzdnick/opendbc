@@ -267,7 +267,7 @@ class TestMatchFwToCarVinFallback:
       _car_fw(Ecu.eps, 0x730, b'KSD5-3210X-C-00' + b'\x00' * 9),
       _car_fw(Ecu.engine, 0x7e0, b'PYAS-188K2-C' + b'\x00' * 12),
       _car_fw(Ecu.abs, 0x760, b'KA0G-437AS-0-03' + b'\x00' * 9),
-      _car_fw(Ecu.fwdRadar, 0x764, b'G46L-67XA1-C' + b'\x00' * 13),
+      _car_fw(Ecu.fwdRadar, 0x764, b'G46L-67XA1-C' + b'\x00' * 12),
       _car_fw(Ecu.fwdCamera, 0x706, b'GMG6-67XK2-G' + b'\x00' * 12),
       _car_fw(Ecu.transmission, 0x7e1, b'PYAS-21PS1-D' + b'\x00' * 12),
     ]

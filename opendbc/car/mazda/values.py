@@ -178,9 +178,10 @@ STEER_TO_ZERO_EPS_FW = {
 
 # The 2016.5-era radar kept by an EPS-swapped older body. Deliberately absent from
 # fingerprints.py: unknown fw keeps the vision-only path, and alpha-long replays this
-# radar's own dialect instead of the 2022 templates (mazdacan.py).
+# radar's own dialect instead of the 2022 templates (mazdacan.py). Stored unpadded;
+# the interface matches with nulls stripped so response padding cannot break it.
 G46L_RADAR_FW = {
-  b'G46L-67XA1-C\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+  b'G46L-67XA1-C',
 }
 
 class Buttons:

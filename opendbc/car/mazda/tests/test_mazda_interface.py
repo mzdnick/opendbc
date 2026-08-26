@@ -117,6 +117,15 @@ class TestMazdaEpsSwap:
     assert CP.flags & MazdaFlags.G46L_RADAR
     assert not CP.openpilotLongitudinalControl
 
+  @pytest.mark.parametrize("pad", [0, 12, 13])
+  def test_g46l_radar_matches_any_null_padding(self, pad):
+    # the device query returns one 24-byte response; a constant carrying 13 nulls once
+    # failed the exact match on every boot and silently disabled alpha (AlphalongKEerror1)
+    CP = _params(CAR.MAZDA_CX5_2022, _eps_fw(SWAPPED_EPS_FW) + [_fw(Ecu.fwdRadar, 0x764, G46L_FW + b'\x00' * pad)],
+                 alpha_long=True)
+    assert CP.flags & MazdaFlags.G46L_RADAR
+    assert CP.alphaLongitudinalAvailable
+
   def test_swapped_eps_keeps_the_real_vehicle_specs(self):
     # the whole point of fixing detection is that the user no longer forces MAZDA_CX5_2022 and
     # inherits its mass, steer ratio and tire stiffness

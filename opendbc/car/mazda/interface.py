@@ -43,7 +43,7 @@ class CarInterface(CarInterfaceBase):
     # replays that radar's own dialect, not the 2022 templates.
     engine_fw = FW_VERSIONS[candidate].get((structs.CarParams.Ecu.engine, 0x7e0, None), [])
     engine_corroborated = docs or not car_fw or any(fw.ecu == 'engine' and fw.fwVersion in engine_fw for fw in car_fw)
-    g46l_radar = any(fw.ecu == 'fwdRadar' and fw.fwVersion in G46L_RADAR_FW for fw in car_fw)
+    g46l_radar = any(fw.ecu == 'fwdRadar' and fw.fwVersion.rstrip(b'\x00') in G46L_RADAR_FW for fw in car_fw)
     if g46l_radar:
       ret.flags |= int(MazdaFlags.G46L_RADAR)
     ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and \

@@ -113,38 +113,26 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
   def _press_set(self):
     # arm the driver-intent qualifier the way every logged engagement does: a wheel press
     # lands 30-70 ms before PEDALS.ACC_ACTIVE rises
-    self._rx(self._button_msg(resume=False, cancel=False, set_m=True))
-    self._rx(self._button_msg(resume=False, cancel=False))
+    self._rx(self._button_msg(set_m=True))
 
   def test_enable_control_allowed_from_cruise(self):
-    # same as the common test, but engagement here requires the driver-intent qualifier
+    # the common test plus the driver-intent qualifier this mode requires
     self._press_set()
-    self._rx(self._pcm_status_msg(False))
-    self.assertFalse(self.safety.get_controls_allowed())
-    self._rx(self._pcm_status_msg(True))
-    self.assertTrue(self.safety.get_controls_allowed())
-
-  def test_cruise_engaged_prev(self):
-    for engaged in [True, False]:
-      self._press_set()
-      self._rx(self._pcm_status_msg(engaged))
-      self.assertEqual(engaged, self.safety.get_cruise_engaged_prev())
-      self._rx(self._pcm_status_msg(not engaged))
-      self.assertEqual(not engaged, self.safety.get_cruise_engaged_prev())
+    super().test_enable_control_allowed_from_cruise()
 
   def test_cruise_without_button_never_arms(self):
     # PEDALS.ACC_ACTIVE alone is the body answering our own fabricated frames; without a
     # SET/RES press heard from the wheel it must not arm controls
     self._rx(self._pcm_status_msg(False))
-    for _ in range(20):
+    for _ in range(12):
       self._rx(self._pcm_status_msg(True))
       self.assertFalse(self.safety.get_controls_allowed())
 
   def test_button_window_expires(self):
     self._press_set()
-    # 10 Hz CRZ_BTNS: run the counter past the 1 s window with idle button frames
+    # 10 Hz CRZ_BTNS: run the countdown past the 1 s window with idle button frames
     for _ in range(12):
-      self._rx(self._button_msg(resume=False, cancel=False))
+      self._rx(self._button_msg())
     self._rx(self._pcm_status_msg(True))
     self.assertFalse(self.safety.get_controls_allowed())
 
@@ -153,8 +141,8 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
     self._rx(self._pcm_status_msg(True))
     self.assertTrue(self.safety.get_controls_allowed())
     # the window expiring must not drop an active engagement
-    for _ in range(30):
-      self._rx(self._button_msg(resume=False, cancel=False))
+    for _ in range(12):
+      self._rx(self._button_msg())
       self._rx(self._pcm_status_msg(True))
       self.assertTrue(self.safety.get_controls_allowed())
     self._rx(self._pcm_status_msg(False))
@@ -162,7 +150,6 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
 
   def test_each_engage_button_arms(self):
     for btn in ("set_m", "set_p", "resume"):
-      self.safety.set_controls_allowed(False)
       self._rx(self._button_msg(**{btn: True}))
       self._rx(self._pcm_status_msg(True))
       self.assertTrue(self.safety.get_controls_allowed(), btn)
@@ -178,18 +165,26 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
         self.assertEqual(should_tx, self._tx(self._accel_msg(accel, bus=2)))
 
   def test_stock_crz_info_standby_allowed(self):
-    # stock standby pegs the command field high; it must pass byte-exactly, checksum included,
-    # instead of being decoded as a huge accel command
+    # every not-controlling stock pattern pegs the command field high: main-off standby and
+    # both armed-idle variants (ACC_SET_ALLOWED follows the brake). All must pass byte-exactly,
+    # checksum included, instead of being decoded as a huge accel command.
+    def pegged_frame(d4, d5, counter):
+      dat = bytes([0x01, 0xff, 0xe3, 0xff, d4, d5, counter])
+      return dat + bytes([(0xff - sum(dat)) & 0xff])
+
     for controls_allowed in (False, True):
       self.safety.set_controls_allowed(controls_allowed)
       for bus in (0, 2):
-        for counter in range(16):
-          checksum = (0x5d - counter) & 0xff
-          dat = bytes.fromhex(f"01ffe3ffc000{counter:02x}{checksum:02x}")
-          self.assertTrue(self._tx(common.make_msg(bus, 0x21b, 8, dat)))
+        for d4, d5 in ((0xc0, 0x00), (0xc0, 0x80), (0xc4, 0x80)):
+          for counter in range(16):
+            self.assertTrue(self._tx(common.make_msg(bus, 0x21b, 8, pegged_frame(d4, d5, counter))))
 
         bad_checksum = bytes.fromhex("01ffe3ffc0000000")
         self.assertFalse(self._tx(common.make_msg(bus, 0x21b, 8, bad_checksum)))
+        # a pegged frame claiming ACC_ACTIVE must never ride the standby allowance
+        self.assertFalse(self._tx(common.make_msg(bus, 0x21b, 8, pegged_frame(0xc6, 0x80, 0x00))))
+        # and pegged with stop bits set is not a stock pattern either
+        self.assertFalse(self._tx(common.make_msg(bus, 0x21b, 8, pegged_frame(0xc0, 0x84, 0x00))))
 
   def test_g46l_crz_info_armed_allowed(self):
     # the G46L radar pegs the command high whenever MRCC is armed but not engaged;

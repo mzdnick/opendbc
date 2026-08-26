@@ -34,14 +34,27 @@ class CarControllerParams:
   STOCK_RADAR_ALIVE_T = 0.05   # stock CRZ_INFO runs at 50 Hz; silent this long = torn down
   STOCK_RADAR_GUARD_T = 1.0    # two-master guard: block engagement until silent this long
   RADAR_SESSION_LIMIT_T = 10.0  # per-episode UDS budget: a silent radar gives up here
-  RADAR_NRC_FRESH_T = 1.0      # a negative UDS response counts as a live refusal this long
-  CAM_LANEINFO_FRESH_T = 0.5   # camera counts as heard from if CAM_LANEINFO arrived this recently
+  # CAM_LANEINFO is a ~2 Hz message (longest period measured 0.563 s across 26+ segments on
+  # two cars), so freshness has to be judged against that cadence: a window shorter than one
+  # period reads every inter-frame gap as a dropout, zeroes the settle timer each time, and
+  # the teardown gate never opens. The window keeps 2.7x margin over the longest observed
+  # period and still catches a genuine camera dropout.
+  CAM_LANEINFO_PERIOD_T = 0.563
+  CAM_LANEINFO_FRESH_T = 1.5
 
   # RESUME_UNLATCHING pulse width at the release; stock latched releases pulse 0.22-0.38 s,
   # this sits mid-distribution
   RESUME_UNLATCH_T = 0.26
 
   CANCEL_CONTEXT_T = 0.5       # a wheel CANCEL keeps availability drops landing this long after release
+
+  # The plan flapping across zero at a held standstill (a lead inches forward and stops) used
+  # to fire a fresh RESUME_UNLATCHING pulse per flap and re-assert the stop bits mid-pulse, a
+  # combination stock never emits (stock pulses exactly once per release, stop bits already
+  # dropped). The plan must ask to move this long before the hold releases; stock's releases
+  # lag the lead's departure by at least this much (all 23 latched releases show the lead
+  # already opening at >= +0.31 m/s at the pulse, ~0.2 s into a typical drive-off).
+  RELEASE_DEBOUNCE_T = 0.2
 
   # A marginal vision lead flickers leadVisible faster than the camera can be shown a track
   # appearing and vanishing (route 6bb2dc61c4 t+400: 6 toggles in 1.4 s on a 120 m lead), so the
@@ -55,6 +68,13 @@ class CarControllerParams:
   # to 7.6 s after standstill. The command through the hold is the plan's own, which parks at
   # CP.stopAccel; this is only the relaxed value we send once the car has the brakes.
   ACCEL_HOLD_LATCHED = -0.001  # m/s2
+
+  # ACCEL_CMD ceiling while a body-latched release's RESUME_UNLATCHING pulse plays: stock's
+  # latched releases peak at +0.24-0.25 m/s2 (raw +182/+195) in the pulse tail. Non-latched
+  # pulses are capped at zero instead -- stock's are still <= -0.27 m/s2 when the pulse ends,
+  # and both observed SCBS latches (routes 000000fe, 00000100) fired at a zero-cross inside a
+  # non-latched pulse.
+  ACCEL_RESUME_PULSE_MAX = 0.25  # m/s2, latched releases only
 
   # Command slew limits, m/s3, on the plan-following command only. Asymmetric on purpose: the
   # windup limit is what keeps the command from dumping the brake in one frame (the driver-felt

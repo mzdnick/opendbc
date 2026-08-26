@@ -1,9 +1,9 @@
 import pytest
 
-from opendbc.car import Bus, DT_CTRL, gen_empty_fingerprint
+from opendbc.car import Bus, DT_CTRL, gen_empty_fingerprint, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams, G46L_RADAR_FW
 
 CAM_LANEINFO = 0x440
 
@@ -15,11 +15,19 @@ BIT2_LATCHED = bytes([0x41, 0b00100001, 0, 0, 0, 0, 0, 0])  # BIT2 stuck high fo
 FAULTED = bytes([0x42, 0b00000001, 0, 0, 0, 0x01, 0, 0])    # ERR_BIT (bit 40) set
 
 
-def _interface(alpha_long=True):
+def _interface(alpha_long=True, g46l=False):
   fingerprint = gen_empty_fingerprint()
-  CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, fingerprint, [], alpha_long=alpha_long,
+  car_fw = []
+  if g46l:
+    radar_fw = structs.CarParams.CarFw()
+    radar_fw.ecu = structs.CarParams.Ecu.fwdRadar
+    radar_fw.address = 0x764
+    radar_fw.subAddress = 0
+    radar_fw.fwVersion = sorted(G46L_RADAR_FW)[0] + b'\x00' * 12
+    car_fw = [radar_fw]
+  CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, fingerprint, car_fw, alpha_long=alpha_long,
                                is_release=False, docs=False)
-  CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, fingerprint, [],
+  CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, fingerprint, car_fw,
                                      alpha_long=alpha_long, is_release_sp=False, docs=False)
   return CarInterface(CP, CP_SP)
 
@@ -206,29 +214,42 @@ class TestTwoMasterGuard:
 
 
 class TestCamParserLiveness:
-  """A first-gen (KE) camera on an EPS-swap build sends no CAM_TRAFFIC_SIGNS: 0 frames in
-  22.6 s while CAM_LANEINFO ran at 2 Hz (user log, KE CX-5 with a 2022 EPS, 2026-08-24). The
-  missing frame permanently failed can_valid and raised canError, which the UI words as
-  "Unknown Vehicle Variant". Liveness rides the frames this camera does send: CAM_LANEINFO
-  at 2 Hz plus CAM_EMPTY and CAM_PEDESTRIAN at ~25 Hz (SweetLog_radarAgain census)."""
+  """A first-gen (KE) camera sends none of 0x35F/0x21D/0x25D: 0x35F never came (0 frames in
+  22.6 s while CAM_LANEINFO ran at 2 Hz, user log 2026-08-24), and 0x21D/0x25D are body-bus
+  frames on that generation that reached the camera leg only through the panda's pre-safety
+  bridge (AlphalongKEerror1, 2026-08-26: bus-2 RX dead from safety-set, canError 1.3 s later).
+  Liveness rests on CAM_LANEINFO; the 2022 camera sends all three and keeps them required."""
 
-  def test_camera_bus_valid_without_traffic_signs(self):
+  def test_g46l_camera_bus_valid_on_laneinfo_alone(self):
+    from opendbc.can import CANPacker
+    packer = CANPacker("mazda_2017")
+    CI = _interface(g46l=True)
+    for i in range(int(6.0 / DT_CTRL)):
+      lkas = packer.make_can_msg("CAM_LKAS", 2, {"CTR": i % 16})
+      CI.update([(int(i * DT_CTRL * 1e9), [(CAM_LANEINFO, SETTLED, 2), (lkas[0], lkas[1], lkas[2])])])
+    assert CI.can_parsers[Bus.cam].can_valid
+    for addr in (0x35F, 0x21D, 0x25D):
+      # the explicit nan entries are load-bearing: deleting one re-registers the
+      # message as required through the lazy vl reads
+      assert CI.can_parsers[Bus.cam].message_states[addr].ignore_alive
+
+  def test_2022_camera_bus_valid_with_all_three_frames(self):
     from opendbc.can import CANPacker
     packer = CANPacker("mazda_2017")
     CI = _interface()
     for i in range(int(6.0 / DT_CTRL)):
       lkas = packer.make_can_msg("CAM_LKAS", 2, {"CTR": i % 16})
+      signs = packer.make_can_msg("CAM_TRAFFIC_SIGNS", 2, {})
       cam_empty = (0x21D, bytes.fromhex("7f3fff000000ffff"), 2)
       cam_pedestrian = (0x25D, bytes.fromhex("07f83d6c00000000"), 2)
       CI.update([(int(i * DT_CTRL * 1e9),
-                  [(CAM_LANEINFO, SETTLED, 2), (lkas[0], lkas[1], lkas[2]), cam_empty, cam_pedestrian])])
+                  [(CAM_LANEINFO, SETTLED, 2), (lkas[0], lkas[1], lkas[2]),
+                   (signs[0], signs[1], signs[2]), cam_empty, cam_pedestrian])])
     assert CI.can_parsers[Bus.cam].can_valid
-    # the explicit nan entry is load-bearing: deleting it re-registers the
-    # message as required through carstate_ext's lazy vl read
-    assert CI.can_parsers[Bus.cam].message_states[0x35F].ignore_alive
+    assert not CI.can_parsers[Bus.cam].message_states[0x21D].ignore_alive
 
   def test_silent_camera_bus_stays_invalid(self):
-    CI = _interface()
+    CI = _interface(g46l=True)
     for i in range(int(6.0 / DT_CTRL)):
       CI.update([(int(i * DT_CTRL * 1e9), [(0x228, bytes.fromhex("142007ff02f00000"), 0)])])
     assert not CI.can_parsers[Bus.cam].can_valid

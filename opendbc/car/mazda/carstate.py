@@ -2,7 +2,7 @@ from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, DT_CTRL, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
-from opendbc.car.mazda.values import DBC, LKAS_LIMITS, CarControllerParams
+from opendbc.car.mazda.values import DBC, LKAS_LIMITS, CarControllerParams, MazdaFlags
 from opendbc.sunnypilot.car.mazda.carstate_ext import CarStateExt
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -308,12 +308,17 @@ class CarState(CarStateBase, CarStateExt):
       # response only arrives when a session request is answered
       pt_messages.append(("CRZ_INFO", float("nan")))
       pt_messages.append(("RADAR_UDS_RESPONSE", float("nan")))
+    # The first-gen (KE) camera sends none of these: 0x35F never comes, and 0x21D/0x25D
+    # are body-bus frames on that generation, not camera frames — they reach the camera
+    # leg only through the panda's pre-safety bridge. Liveness rests on CAM_LANEINFO.
+    g46l = bool(CP.flags & MazdaFlags.G46L_RADAR)
     cam_messages = [
       # read through vl_all, which unlike vl has no lazy registration
       ("CAM_LANEINFO", 0),
-      # the first-gen (KE) camera never sends this frame; liveness stays on CAM_LANEINFO
-      ("CAM_TRAFFIC_SIGNS", float("nan")),
-      ("CAM_EMPTY", 0),
+      ("CAM_TRAFFIC_SIGNS", float("nan") if g46l else 0),
+      ("CAM_EMPTY", float("nan") if g46l else 0),
+      # listed here so the vl read in update() cannot lazily re-register it as required
+      ("CAM_PEDESTRIAN", float("nan") if g46l else 0),
     ]
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),

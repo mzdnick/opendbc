@@ -46,6 +46,14 @@ class TestMazdaEpsSwap:
     assert CP.minSteerSpeed == 0
     assert CP.steerActuatorDelay == pytest.approx(0.14)
 
+  def test_swapped_eps_lifts_the_cx9_floor_too(self):
+    # an export CX-9 named CX-9 2021 by the donor-EPS fallback: capability
+    # follows the EPS, so the stock 45 kph floor is gone under the CX-9 name
+    CP = _params(CAR.MAZDA_CX9_2021, _eps_fw(SWAPPED_EPS_FW))
+    assert not CP.dashcamOnly
+    assert CP.minSteerSpeed == 0
+    assert CP.steerActuatorDelay == pytest.approx(0.14)
+
   def test_swapped_eps_does_not_unlock_longitudinal(self):
     # the radar and camera are not part of an EPS swap, and this car keeps its own pre-2022 pair
     CP = _params(CAR.MAZDA_CX5, _eps_fw(SWAPPED_EPS_FW), alpha_long=True)

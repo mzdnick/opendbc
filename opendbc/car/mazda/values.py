@@ -170,7 +170,6 @@ STEER_TO_ZERO_EPS_FW = {
   b'KSD5-3210X-C-00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
 }
 
-
 class Buttons:
   NONE = 0
   SET_PLUS = 1
@@ -183,8 +182,9 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
   # A donor EPS (steer-to-zero swaps) breaks every exact FW match; the VIN names
   # the chassis through any ECU swap. Runs only after exact and fuzzy FW fail.
   # Model line is VIN positions 4-5, model year code is position 10.
-  if is_valid_vin(vin):
-    vin_obj = Vin(vin)
+  vin_obj = Vin(vin) if is_valid_vin(vin) else None
+  skip_engine_fallback = False
+  if vin_obj is not None:
     chassis_code = vin_obj.vds[0:2]
     year = vin_obj.vis[0]
 
@@ -202,24 +202,45 @@ def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str
     # (BP, DM, KE, out-of-range years): never second-guess it with the engine.
     # WMIs outside the table (e.g. 7MM, CX-50) keep the fallback and its
     # collision risk; pinned by test.
-    if vin_obj.wmi in {wmi for platform in CAR for wmi in platform.config.wmis}:
-      return set()
+    skip_engine_fallback = vin_obj.wmi in {wmi for platform in CAR for wmi in platform.config.wmis}
 
-  # Oceania VINs encode no model year and never decode; engine firmware is
-  # unique per platform (asserted by test), so it names the chassis instead.
   # A lone responding address is not a car to name.
   if len(live_fw_versions) < 2:
     return set()
 
-  engine_fw = live_fw_versions.get((0x7e0, None), set())
-  candidates = set()
-  for platform, ecus in offline_fw_versions.items():
-    if engine_fw & set(ecus.get((Ecu.engine, 0x7e0, None), [])):
-      candidates.add(platform)
+  # Oceania VINs encode no model year and never decode; engine firmware is
+  # unique per platform (asserted by test), so it names the chassis instead.
+  if not skip_engine_fallback:
+    engine_fw = live_fw_versions.get((0x7e0, None), set())
+    engine_candidates = set()
+    for platform, ecus in offline_fw_versions.items():
+      if engine_fw & set(ecus.get((Ecu.engine, 0x7e0, None), [])):
+        engine_candidates.add(platform)
 
-  if len(candidates) == 1:
-    carlog.error(f"Fingerprinted {next(iter(candidates))} by engine firmware")
-  return {str(c) for c in candidates}
+    if len(engine_candidates) == 1:
+      carlog.error(f"Fingerprinted {next(iter(engine_candidates))} by engine firmware")
+      return {str(c) for c in engine_candidates}
+
+  # Last resort: a steer-to-zero EPS in a chassis nothing else names carries the
+  # platform its firmware belongs to, and the chassis code picks the body inside
+  # that generation (an export CX-9 takes CX-9 2021 specs). Only vetted firmware
+  # names a car, so a stock unsupported chassis stays unnamed.
+  eps_fw = live_fw_versions.get((0x730, None), set()) & STEER_TO_ZERO_EPS_FW
+  eps_candidates = set()
+  for platform, ecus in offline_fw_versions.items():
+    if eps_fw & set(ecus.get((Ecu.eps, 0x730, None), [])):
+      eps_candidates.add(platform)
+
+  if len(eps_candidates) == 1:
+    eps_platform = next(iter(eps_candidates))
+    if vin_obj is not None:
+      chassis_platforms = {p for p in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) if vin_obj.vds[0:2] in p.config.chassis_codes}
+      if len(chassis_platforms) == 1:
+        eps_platform = next(iter(chassis_platforms))
+    carlog.error(f"Fingerprinted {eps_platform} by donor EPS firmware")
+    return {str(eps_platform)}
+
+  return set()
 
 
 FW_QUERY_CONFIG = FwQueryConfig(

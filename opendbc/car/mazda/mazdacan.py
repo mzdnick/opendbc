@@ -38,8 +38,8 @@ def create_acc_command(packer, bus, counter, accel, long_active, acc_available, 
   # CRZ_INFO stands in for the disabled radar's accel command frame. While MRCC is armed
   # but not engaged, stock advertises ACC_SET_ALLOWED with a zero command so the dash
   # accepts SET; with the main switch off it broadcasts a static standby pattern with the
-  # command field pegged high. The G46L pegs the command high whenever it is not engaged,
-  # armed included.
+  # command field pegged high. The G46L pegs the command high when armed but not engaged too;
+  # its main-off standby is the same frame as the 2022's.
   values = {
     "STATUS": 1,
     "STATIC_1": 0x7ff,
@@ -57,7 +57,6 @@ def create_acc_command(packer, bus, counter, accel, long_active, acc_available, 
     })
   else:
     values["ACCEL_CMD"] = 4.094  # standby pattern, raw 8190
-    values["NEW_SIGNAL_7"] = int(g46l)
 
   dat = packer.make_can_msg("CRZ_INFO", bus, values)[1]
   values["CHKSUM"] = crz_info_checksum(dat)

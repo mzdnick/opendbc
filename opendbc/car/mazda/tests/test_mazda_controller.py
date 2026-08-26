@@ -131,12 +131,11 @@ class TestMazdaLongitudinalMessages:
       dat = mazdacan.create_acc_command(packer, 0, counter, 0.0, False, True, False, False, g46l=True)[1]
       assert dat.hex() == expected
 
-  def test_crz_info_g46l_standby_matches_the_capture(self, packer):
-    for counter in range(16):
-      checksum = (0xdd - counter) & 0xff
-      expected = f"01ffe3ffc080{counter:02x}{checksum:02x}"
-      dat = mazdacan.create_acc_command(packer, 0, counter, 0.0, False, False, False, False, g46l=True)[1]
-      assert dat.hex() == expected
+  def test_crz_info_g46l_standby_is_the_kf_path(self, packer):
+    # the G46L's main-off standby is the same frame as the 2022's (SweetLog captures)
+    kf = mazdacan.create_acc_command(packer, 0, 3, 0.0, False, False, False, False)[1]
+    g46l = mazdacan.create_acc_command(packer, 0, 3, 0.0, False, False, False, False, g46l=True)[1]
+    assert kf == g46l
 
   def test_crz_info_g46l_engaged_is_the_kf_path(self, packer):
     kf = mazdacan.create_acc_command(packer, 0, 3, 2.0, True, False, False, False)[1]

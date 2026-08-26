@@ -129,6 +129,20 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
         bad_checksum = bytes.fromhex("01ffe3ffc0000000")
         self.assertFalse(self._tx(common.make_msg(bus, 0x21b, 8, bad_checksum)))
 
+  def test_g46l_crz_info_armed_allowed(self):
+    # the G46L radar pegs the command high whenever MRCC is armed but not engaged;
+    # same byte-exact treatment as the standby, its own checksum constant
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      for bus in (0, 2):
+        for counter in range(16):
+          checksum = (0xd9 - counter) & 0xff
+          dat = bytes.fromhex(f"01ffe3ffc480{counter:02x}{checksum:02x}")
+          self.assertTrue(self._tx(common.make_msg(bus, 0x21b, 8, dat)))
+
+        bad_checksum = bytes.fromhex("01ffe3ffc4800000")
+        self.assertFalse(self._tx(common.make_msg(bus, 0x21b, 8, bad_checksum)))
+
   def test_empty_radar_tracks_allowed(self):
     radar_messages = {
       0x499: bytes.fromhex("0008c00000000000"),
@@ -145,6 +159,17 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
       for bus in (0, 2):
         for addr, dat in radar_messages.items():
           self.assertTrue(self._tx(common.make_msg(bus, addr, 8, dat)))
+
+  def test_g46l_radar_static_allowed(self):
+    # the 2016.5 G46L body's own static capture; the 2022 one above is not its frame
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      for bus in (0, 2):
+        self.assertTrue(self._tx(common.make_msg(bus, 0x499, 8, bytes.fromhex("0098400000000000"))))
+
+    self.safety.set_controls_allowed(True)
+    for bus in (0, 2):
+      self.assertFalse(self._tx(common.make_msg(bus, 0x499, 8, bytes.fromhex("0098400100000000"))))
 
   def test_synthetic_lead_radar_track_gated_on_controls(self):
     # DIST_OBJ and RELV_OBJ are free fields; the template bytes must match. The non-template

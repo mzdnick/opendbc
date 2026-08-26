@@ -31,11 +31,17 @@ static bool mazda_longitudinal = false;
 // With longitudinal control the stock radar is silenced and openpilot replays its frames,
 // so allowed tx patterns are pinned to byte-exact stock captures wherever possible.
 
+// each radar generation sends its own static capture; the controller picks the dialect (mazdacan.py)
 static bool mazda_radar_static_msg_valid(const CANPacket_t *msg) {
-  return (msg->data[0] == 0x00U) && (msg->data[1] == 0x08U) &&
-         (msg->data[2] == 0xc0U) && (msg->data[3] == 0x00U) &&
-         (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
-         (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
+  bool capture_2022 = (msg->data[0] == 0x00U) && (msg->data[1] == 0x08U) &&
+                      (msg->data[2] == 0xc0U) && (msg->data[3] == 0x00U) &&
+                      (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
+                      (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
+  bool capture_g46l = (msg->data[0] == 0x00U) && (msg->data[1] == 0x98U) &&
+                      (msg->data[2] == 0x40U) && (msg->data[3] == 0x00U) &&
+                      (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
+                      (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
+  return capture_2022 || capture_g46l;
 }
 
 static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
@@ -184,9 +190,17 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
                          ((msg->data[6] & 0xf0U) == 0x00U) &&
                          (msg->data[7] == ((0x5dU - msg->data[6]) & 0xffU));
 
+    // the G46L radar pegs the command high whenever MRCC is armed but not engaged;
+    // its own capture, checksum constant included
+    bool g46l_armed = (msg->data[0] == 0x01U) && (msg->data[1] == 0xffU) &&
+                      (msg->data[2] == 0xe3U) && (msg->data[3] == 0xffU) &&
+                      (msg->data[4] == 0xc4U) && (msg->data[5] == 0x80U) &&
+                      ((msg->data[6] & 0xf0U) == 0x00U) &&
+                      (msg->data[7] == ((0xd9U - msg->data[6]) & 0xffU));
+
     // 13-bit ACCEL_CMD: data[2] low bits, data[3], data[4] high bits, offset 4096
     int desired_accel = ((((int)msg->data[2] & 0x3) << 11) | (((int)msg->data[3]) << 3) | (((int)msg->data[4]) >> 5)) - 4096;
-    if (!stock_standby && longitudinal_accel_checks(desired_accel, MAZDA_LONG_LIMITS)) {
+    if (!stock_standby && !g46l_armed && longitudinal_accel_checks(desired_accel, MAZDA_LONG_LIMITS)) {
       tx = false;
     }
   }

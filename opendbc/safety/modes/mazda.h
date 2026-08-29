@@ -228,6 +228,14 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  // while the stock camera's frames are forwarded (openpilot not controlling), ours must
+  // stay off the bus: the EPS and the dash see one sender per state. Runs after the steer
+  // checks so their disengaged-frame state resets keep happening every frame.
+  if (main_bus && ((msg->addr == MAZDA_LKAS) || (msg->addr == MAZDA_LKAS_HUD)) &&
+      !(controls_allowed || controls_allowed_lateral)) {
+    tx = false;
+  }
+
   if (mazda_longitudinal && long_replacement_bus && (msg->addr == MAZDA_CRZ_INFO)) {
     // the stock patterns for a radar that is not controlling peg the command field high:
     // main-off standby (data[4]=0xc0, data[5]=0x00) and armed-idle (bit 47 set, and
@@ -306,6 +314,22 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
+// The stock camera's LKAS (0x243) and HUD (0x440) frames reach the car while openpilot
+// isn't controlling (no cruise engagement, no MADS lateral), keeping the stock lane keep
+// and the dash's departure warnings live. The tx hook drops our own idle frames in that
+// state, so the two senders never share bus 0.
+static bool mazda_fwd_hook(int bus_num, int addr) {
+  bool block_msg = false;
+
+  if (bus_num == MAZDA_CAM) {
+    if (((unsigned int)addr == MAZDA_LKAS) || ((unsigned int)addr == MAZDA_LKAS_HUD)) {
+      block_msg = controls_allowed || controls_allowed_lateral;
+    }
+  }
+
+  return block_msg;
+}
+
 static safety_config mazda_init(uint16_t param) {
   mazda_engage_btn_frames = 0U;
   mazda_radar_mastered = false;
@@ -313,9 +337,9 @@ static safety_config mazda_init(uint16_t param) {
   mazda_radar_was_silenced = false;
 
   static const CanMsg MAZDA_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
   };
 
   // The replaced-radar addresses stay check_relay = false on purpose: that mechanism is for
@@ -325,9 +349,9 @@ static safety_config mazda_init(uint16_t param) {
   // relay check would fault every boot. The two-master guard lives in carstate instead
   // (accFaulted on radar-came-back) plus the session manager's bounded re-silence.
   static const CanMsg MAZDA_LONG_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_INFO, 0, 8, .check_relay = false},
     {MAZDA_CRZ_CTRL, 0, 8, .check_relay = false},
     {MAZDA_RADAR_STATIC, 0, 8, .check_relay = false},
@@ -376,4 +400,5 @@ const safety_hooks mazda_hooks = {
   .init = mazda_init,
   .rx = mazda_rx_hook,
   .tx = mazda_tx_hook,
+  .fwd = mazda_fwd_hook,
 };

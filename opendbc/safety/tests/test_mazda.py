@@ -15,6 +15,7 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
   RELAY_MALFUNCTION_ADDRS = {0: (0x243, 0x440)}
   # camera 0x243/0x440 frames forward while openpilot is not controlling
   FWD_BLACKLISTED_ADDRS = {2: []}
+  STOCK_PASSTHROUGH_ADDRS = {2: [0x243, 0x440]}
   ALLOW_DISENGAGED_STEER_TX = False
 
   MAX_RATE_UP = 12
@@ -91,29 +92,21 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
     self.assertTrue(self._tx(self._button_msg(cancel=True)))
     self.assertTrue(self._tx(self._button_msg(resume=True)))
 
-  def test_stock_passthrough(self):
-    # disengaged: camera frames forward to bus 0, openpilot frames are dropped
-    self.safety.set_controls_allowed(0)
-    self.safety.set_controls_allowed_lateral(0)
-    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x243))
-    self.assertEqual(0, self.safety.safety_fwd_hook(2, 0x440))
-    self.assertFalse(self._tx(self._torque_cmd_msg(0)))
-    self.assertFalse(self._tx(self._laneinfo_msg()))
+  def _passthrough_probe_msg(self, addr):
+    return self._torque_cmd_msg(0) if addr == 0x243 else self._laneinfo_msg()
 
-    # engaged
-    self.safety.set_controls_allowed(1)
-    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x243))
-    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x440))
-    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
-    self.assertTrue(self._tx(self._laneinfo_msg()))
+  def _set_engagement(self, controls_allowed, controls_allowed_lateral):
+    self.safety.set_controls_allowed(controls_allowed)
+    self.safety.set_controls_allowed_lateral(controls_allowed_lateral)
 
-    # MADS lateral-only
-    self.safety.set_controls_allowed(0)
-    self.safety.set_controls_allowed_lateral(1)
-    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x243))
-    self.assertEqual(-1, self.safety.safety_fwd_hook(2, 0x440))
-    self.assertTrue(self._tx(self._torque_cmd_msg(0)))
-    self.assertTrue(self._tx(self._laneinfo_msg()))
+  def _stock_passthrough_states(self):
+    # the camera owns 0x243/0x440 only while openpilot controls neither axis;
+    # engaging either axis hands the addresses to openpilot
+    return [
+      (True, lambda: self._set_engagement(False, False)),
+      (False, lambda: self._set_engagement(True, False)),
+      (False, lambda: self._set_engagement(False, True)),
+    ]
 
 
 class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafetyTest):

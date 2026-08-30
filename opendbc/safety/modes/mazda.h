@@ -228,9 +228,9 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // while the stock camera's frames are forwarded (openpilot not controlling), ours must
-  // stay off the bus: the EPS and the dash see one sender per state. Runs after the steer
-  // checks so their disengaged-frame state resets keep happening every frame.
+  // openpilot frames stay off the bus while the stock camera frames forward
+  // (mazda_fwd_hook); keep after the steer checks, which reset rate-limit state
+  // on every disengaged frame
   if (main_bus && ((msg->addr == MAZDA_LKAS) || (msg->addr == MAZDA_LKAS_HUD)) &&
       !(controls_allowed || controls_allowed_lateral)) {
     tx = false;
@@ -314,10 +314,9 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
-// The stock camera's LKAS (0x243) and HUD (0x440) frames reach the car while openpilot
-// isn't controlling (no cruise engagement, no MADS lateral), keeping the stock lane keep
-// and the dash's departure warnings live. The tx hook drops our own idle frames in that
-// state, so the two senders never share bus 0.
+// The stock camera CAM_LKAS (0x243) and CAM_LANEINFO (0x440) frames reach the car while
+// openpilot isn't controlling, keeping the stock lane keep and the dash LDW live; the tx
+// hook drops openpilot idle frames then, so bus 0 has one sender.
 static bool mazda_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 

@@ -185,6 +185,17 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
       self.assertTrue(self.safety.get_controls_allowed(), btn)
       self._rx(self._pcm_status_msg(False))
 
+  def test_cancel_button_exits_controls(self):
+    self._press_set()
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+    # the driver's cancel press always exits controls
+    self._rx(self._button_msg(cancel=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    # ACC_ACTIVE alone does not re-arm without a fresh button press
+    self._rx(self._pcm_status_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
   def test_camera_bus_accel_actuation_limits(self):
     # the synthetic radar frames are duplicated onto the camera bus; same limits apply there
     for accel in (self.MIN_ACCEL - 1, self.MIN_ACCEL, self.INACTIVE_ACCEL, self.MAX_ACCEL, self.MAX_ACCEL + 1):

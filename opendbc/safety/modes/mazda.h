@@ -195,11 +195,9 @@ static bool mazda_is_lka_addr(int addr) {
   return (((unsigned int)addr == MAZDA_LKAS) || ((unsigned int)addr == MAZDA_LKAS_HUD));
 }
 
-// One sender per LKAS address, at frame granularity: while openpilot controls either
-// axis, the fwd hook blocks the camera's 0x243/0x440 frames and the tx hook passes
-// openpilot frames; while openpilot controls neither axis, the stock camera CAM_LKAS
-// and CAM_LANEINFO frames reach the car, keeping the stock lane keep and the dash LDW
-// live, and the tx hook drops openpilot idle frames so bus 0 has one sender.
+// One sender per LKAS address, at frame granularity: the camera owns them while openpilot
+// controls neither axis (stock lane keep and dash LDW stay live), openpilot once either
+// axis engages. Either axis, not lateral alone: the controller still sends idle 0x243.
 static bool mazda_openpilot_controlling(void) {
   return controls_allowed || controls_allowed_lateral;
 }

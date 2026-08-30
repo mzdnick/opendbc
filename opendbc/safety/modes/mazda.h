@@ -191,6 +191,19 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
   }
 }
 
+static bool mazda_is_lka_addr(int addr) {
+  return (((unsigned int)addr == MAZDA_LKAS) || ((unsigned int)addr == MAZDA_LKAS_HUD));
+}
+
+// One sender per LKAS address, at frame granularity: while openpilot controls either
+// axis, the fwd hook blocks the camera's 0x243/0x440 frames and the tx hook passes
+// openpilot frames; while openpilot controls neither axis, the stock camera CAM_LKAS
+// and CAM_LANEINFO frames reach the car, keeping the stock lane keep and the dash LDW
+// live, and the tx hook drops openpilot idle frames so bus 0 has one sender.
+static bool mazda_openpilot_controlling(void) {
+  return controls_allowed || controls_allowed_lateral;
+}
+
 static bool mazda_tx_hook(const CANPacket_t *msg) {
   // Envelope sized for the CX-5 2022+ EPS, which the controller commands up to (max_torque 1200,
   // driver_torque_multiplier 15 vs upstream stock 800/1). SafetyModel.mazda is per-brand and can't
@@ -228,11 +241,8 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // openpilot frames stay off the bus while the stock camera frames forward
-  // (mazda_fwd_hook); keep after the steer checks, which reset rate-limit state
-  // on every disengaged frame
-  if (main_bus && ((msg->addr == MAZDA_LKAS) || (msg->addr == MAZDA_LKAS_HUD)) &&
-      !(controls_allowed || controls_allowed_lateral)) {
+  // keep after the steer checks, which reset rate-limit state on every disengaged frame
+  if (main_bus && mazda_is_lka_addr(msg->addr) && !mazda_openpilot_controlling()) {
     tx = false;
   }
 
@@ -314,15 +324,12 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
-// The stock camera CAM_LKAS (0x243) and CAM_LANEINFO (0x440) frames reach the car while
-// openpilot isn't controlling, keeping the stock lane keep and the dash LDW live; the tx
-// hook drops openpilot idle frames then, so bus 0 has one sender.
 static bool mazda_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 
   if (bus_num == MAZDA_CAM) {
-    if (((unsigned int)addr == MAZDA_LKAS) || ((unsigned int)addr == MAZDA_LKAS_HUD)) {
-      block_msg = controls_allowed || controls_allowed_lateral;
+    if (mazda_is_lka_addr(addr)) {
+      block_msg = mazda_openpilot_controlling();
     }
   }
 

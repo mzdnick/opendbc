@@ -308,9 +308,9 @@ class TestCarModelBase(unittest.TestCase):
 
     CC_SP = structs.CarControlSP()
 
-    # Mazda forwards the stock camera CAM_LKAS (0x243) and CAM_LANEINFO (0x440) while
-    # disengaged and drops the controller idle copies at the panda (mazda_fwd_hook), so
-    # those two are expected to be rejected in the disengaged passes below
+    # Mazda relays the stock camera CAM_LKAS (0x243) and CAM_LANEINFO (0x440) while
+    # disengaged (mazda_fwd_hook). The tx hook drops the controller idle copies then
+    # (mazda_tx_hook), so those two are expected to be rejected in the disengaged passes below
     disengaged_dropped_addrs = {0x243, 0x440} if self.CP.brand == "mazda" else set()
 
     def test_car_controller(car_control, disengaged):

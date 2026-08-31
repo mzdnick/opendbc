@@ -49,6 +49,10 @@ class CarState(CarStateBase, CarStateExt):
     self.cancel_context_frames = 0
     self.cam_laneinfo_seen = False
     self.cam_laneinfo_silent_frames = 0
+    self.lkas_on_candidate = None
+    self.lkas_on_stable = False
+    self.lane_lines_armed = False
+    self.lkas_button_press = False
     self.cam_empty_seen = False
     self.radar_session_refused = False
     self.fsc_settled_frames = 0
@@ -163,6 +167,27 @@ class CarState(CarStateBase, CarStateExt):
     else:
       self.cam_laneinfo_silent_frames += 1
     cam_laneinfo_fresh = self.cam_laneinfo_seen and self.cam_laneinfo_silent_frames < CAM_LANEINFO_FRESH_FRAMES
+
+    # The dash LKA button has no CAN signal of its own; LANE_LINES is the state it drives
+    # (0 = LKAS disabled, 1-4 = LKAS on), so a 0 <-> nonzero edge is the button press.
+    # Evaluated only when a frame arrived, debounced over two consecutive frames (2 Hz, so
+    # ~1 s; presses persist, single-frame glitches do not), and the first confirmed value
+    # arms the baseline without firing. Changes among nonzero values are lane state, not
+    # presses. Each edge emits ButtonType.lkas, the same lateral toggle the TJA button
+    # feeds on TJA cars and the Honda, Hyundai, Ford, Chrysler and Toyota buttons feed on
+    # theirs; mads gates the enable side on cruise availability.
+    self.lkas_button_press = False
+    laneinfo_vals = cp_cam.vl_all["CAM_LANEINFO"]["LANE_LINES"]
+    if len(laneinfo_vals) > 0:
+      lkas_on = int(laneinfo_vals[-1]) != 0
+      if lkas_on != self.lkas_on_candidate:
+        self.lkas_on_candidate = lkas_on
+      elif not self.lane_lines_armed:
+        self.lane_lines_armed = True
+        self.lkas_on_stable = lkas_on
+      elif lkas_on != self.lkas_on_stable:
+        self.lkas_on_stable = lkas_on
+        self.lkas_button_press = True
 
     # 0x21d leaves its idle 0x7f status only while the collision warning is displayed.
     if not self.cam_empty_seen:
@@ -283,6 +308,8 @@ class CarState(CarStateBase, CarStateExt):
       *create_button_events(self.cancel_button, prev_cancel_button, {1: ButtonType.cancel}),
       *create_button_events(self.resume_button, prev_resume_button, {1: ButtonType.resumeCruise}),
       *create_button_events(self.main_button, prev_main_button, {1: ButtonType.mainCruise}),
+      # one synthetic lkas press per confirmed LANE_LINES 0 <-> nonzero edge
+      *(create_button_events(1, 0, {1: ButtonType.lkas}) if self.lkas_button_press else []),
     ]
 
     CarStateExt.update(self, ret, ret_sp, can_parsers)

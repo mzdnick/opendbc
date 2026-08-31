@@ -10,7 +10,7 @@ under braking, cruiseState.standstill and the LKAS non-delivery latch.
 """
 import pytest
 
-from opendbc.car import DT_CTRL
+from opendbc.car import DT_CTRL, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.tests.conftest import car_interface, packer
@@ -358,6 +358,74 @@ class TestCancelUnderBraking:
     assert ret.cruiseState.available
     ret, n = self.feed_pedals(CI, pk, n + 5, 0.2, brake=True, cancel=False)
     assert not ret.cruiseState.available
+
+
+class TestLkaButtonToggle:
+  """The dash LKA button has no CAN signal of its own; LANE_LINES is the state it drives
+  (0 = LKAS disabled, 1-4 = lane state with LKAS on), so a confirmed 0 <-> nonzero edge is
+  the button press (route 9ff65375--165359698d: every press drove LANE_LINES to 0 and
+  back). Each edge emits one ButtonType.lkas press for the mads lateral toggle, the same
+  event the TJA button produces on TJA cars and Honda, Hyundai, Ford, Chrysler and Toyota
+  produce on theirs."""
+
+  ON = 2   # two lane lines: LKAS on
+  OFF = 0  # LKAS disabled by the dash button
+
+  def _presses(self, ret):
+    lkas = structs.CarState.ButtonEvent.Type.lkas
+    return sum(1 for be in ret.buttonEvents if be.type == lkas and be.pressed)
+
+  def _feed_laneinfo(self, CI, lane_lines, count=1, i0=0):
+    ret = None
+    for i in range(i0, i0 + count):
+      ret, _ = feed(CI, i, (CAM_LANEINFO, bytes([0x42, lane_lines, 0, 0, 0, 0, 0, 0]), 2))
+    return ret, i0 + count
+
+  def _armed(self, CI, lane_lines=ON):
+    # two agreeing frames arm the baseline without firing
+    ret, n = self._feed_laneinfo(CI, lane_lines, count=2)
+    assert self._presses(ret) == 0
+    return n
+
+  def test_button_off_then_on_emits_one_press_each(self):
+    CI = car_interface(alpha_long=False)
+    n = self._armed(CI)
+    ret, n = self._feed_laneinfo(CI, self.OFF, count=2, i0=n)
+    assert self._presses(ret) == 1
+    ret, n = self._feed_laneinfo(CI, self.OFF, count=3, i0=n)
+    assert self._presses(ret) == 0
+    ret, n = self._feed_laneinfo(CI, self.ON, count=2, i0=n)
+    assert self._presses(ret) == 1
+
+  def test_lane_state_changes_are_not_presses(self):
+    CI = car_interface(alpha_long=False)
+    n = self._armed(CI)
+    for v in (3, 4, 1, 2):
+      ret, n = self._feed_laneinfo(CI, v, count=2, i0=n)
+      assert self._presses(ret) == 0, f"LANE_LINES {v} fired a press"
+
+  def test_single_frame_glitch_is_ignored(self):
+    CI = car_interface(alpha_long=False)
+    n = self._armed(CI)
+    _, n = self._feed_laneinfo(CI, self.OFF, count=1, i0=n)
+    ret, _ = self._feed_laneinfo(CI, self.ON, count=3, i0=n)
+    assert self._presses(ret) == 0
+
+  def test_first_observed_value_does_not_fire(self):
+    # a boot with LKA already off must not emit an enable press when the first frames land
+    CI = car_interface(alpha_long=False)
+    ret, _ = self._feed_laneinfo(CI, self.OFF, count=3)
+    assert self._presses(ret) == 0
+
+  def test_dropout_does_not_fire_and_a_real_edge_still_does(self):
+    CI = car_interface(alpha_long=False)
+    n = self._armed(CI)
+    for i in range(n, n + 300):  # 3 s of silence, past any freshness window
+      CI.update([(t_ns(i), [])])
+    ret, _ = self._feed_laneinfo(CI, self.ON, count=2, i0=n + 300)
+    assert self._presses(ret) == 0
+    ret, _ = self._feed_laneinfo(CI, self.OFF, count=2, i0=n + 302)
+    assert self._presses(ret) == 1
 
 
 class TestCruiseStandstill:

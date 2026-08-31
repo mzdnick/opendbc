@@ -43,10 +43,10 @@ class TestResumeButton:
     assert cc.stop_and_go.resume_unlatching, "the pulse must fire with the release"
 
 
-def cancel_frame(cc, cs, cancel, radar_was_silenced, stock_radar_alive):
+def cancel_frame(cc, cs, cancel, radar_was_silenced, stock_radar_alive, enabled=False, cruise_engaged=True):
   cc.frame = 10  # off the 50-frame alert cadence, on the 10-frame cancel cadence
-  _, sends = step(cc, cs, long_active=False, enabled=False, accel=0., long_state=LongCtrlState.off, available=False,
-                  cruise_engaged=True, cancel=cancel, stock_radar_alive=stock_radar_alive, fsc_settled=False,
+  _, sends = step(cc, cs, long_active=False, enabled=enabled, accel=0., long_state=LongCtrlState.off, available=False,
+                  cruise_engaged=cruise_engaged, cancel=cancel, stock_radar_alive=stock_radar_alive, fsc_settled=False,
                   radar_was_silenced=radar_was_silenced)
   return addrs(sends)
 
@@ -56,7 +56,10 @@ class TestCancelCarveOut:
   CC.enabled (mazda reports pcmCruise). While the stock radar still owns the bus that
   engagement is the driver's own stock MRCC and a CANCEL turns its main off within ~100 ms,
   so the documented stay-stock fallback used to leave the driver with no cruise at all. Once
-  the radar has been silenced a stock engagement is impossible and cancel handles desync."""
+  the radar has been silenced a stock engagement is impossible and cancel handles desync.
+  On the stock radar the same holds for a cruise openpilot never joined (LKA off blocks
+  every engage path, so SET starts a stock-only ACC run, route 9ff65375--165359698d leg B:
+  the old 10 Hz CANCEL switched each SET off within 0.25 s)."""
 
   def test_no_cancel_while_the_radar_is_stock(self, cc, cs):
     # pre-teardown settle window, and equally the silencing-failed drive: a driver SET is
@@ -69,6 +72,22 @@ class TestCancelCarveOut:
     sent = cancel_frame(cc, cs, cancel=True, radar_was_silenced=True, stock_radar_alive=False)
     assert CRZ_BTNS in sent
 
-  def test_stock_longitudinal_cancel_unaffected(self, stock_cc, stock_cs):
+  def test_stock_longitudinal_never_joined_is_not_canceled(self, stock_cc, stock_cs):
+    # the feature: ACC with the LKA button off, openpilot fully out
+    for _ in range(3):
+      sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+      assert CRZ_BTNS not in sent, "CANCELed a cruise openpilot never joined"
+
+  def test_stock_longitudinal_joined_cruise_still_canceled(self, stock_cc, stock_cs):
+    # once openpilot has been enabled on the engagement, a later disengage cancels as before
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, enabled=True)
     sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
     assert CRZ_BTNS in sent
+
+  def test_the_latch_resets_at_cruise_idle(self, stock_cc, stock_cs):
+    # the suppressed engagement ends; the next engagement is again the driver's until
+    # openpilot joins it
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, cruise_engaged=False)
+    sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+    assert CRZ_BTNS not in sent

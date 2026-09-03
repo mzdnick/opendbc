@@ -25,6 +25,7 @@
 #define MAZDA_CAM  2
 
 #define MAZDA_PARAM_LONGITUDINAL 1U
+#define MAZDA_PARAM_TJA_MADS 4U
 
 // CRZ_BTNS frames (10 Hz) an engage press stays fresh. Every logged engagement shows the
 // press 30-70 ms before PEDALS.ACC_ACTIVE rises (104-engagement census, zero genuine

@@ -230,6 +230,8 @@ class MazdaFlags(IntFlag):
 
 class MazdaSafetyFlags(IntFlag):
   LONG = 1
+  # CX-5 2022 wheel family with the physical TJA button; a runtime latch confirms the hardware.
+  TJA_MADS = 4
 
 
 class WMI(StrEnum):
@@ -302,6 +304,8 @@ class Buttons:
   SET_MINUS = 2
   RESUME = 3
   CANCEL = 4
+  # Active-low MRCC master pair on the TJA steering wheel.
+  MRCC_OFF = 5
 
 
 def match_fw_to_car_fuzzy(live_fw_versions, vin, offline_fw_versions) -> set[str]:

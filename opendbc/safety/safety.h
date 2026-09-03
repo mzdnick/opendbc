@@ -287,6 +287,15 @@ int safety_fwd_hook(int bus_num, int addr) {
   return blocked ? -1 : destination_bus;
 }
 
+// Applies per-mode edits to a forwarded copy of a received packet before it goes
+// out on the other bus. The board owns the copy, so the original RX packet that
+// safety and the car controllers see is never modified.
+void safety_fwd_modify(int bus_num, CANPacket_t *msg) {
+  if ((current_hooks != NULL) && (current_hooks->fwd_modify != NULL)) {
+    current_hooks->fwd_modify(bus_num, msg);
+  }
+}
+
 // Given a CRC-8 poly, generate a static lookup table to use with a fast CRC-8
 // algorithm. Called at init time for safety modes using CRC-8.
 void gen_crc_lookup_table_8(uint8_t poly, uint8_t crc_lut[]) {

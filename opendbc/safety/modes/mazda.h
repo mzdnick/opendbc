@@ -51,6 +51,24 @@ static bool mazda_radar_mastered = false;
 static uint32_t mazda_mastered_pedals_frames = 0U;
 static bool mazda_radar_was_silenced = false;
 
+// Physical TJA wheel button as the MADS lateral source. The param says the CX-5 2022
+// wheel family was verified; most trims carry no TJA button at all, so the rx hook
+// latches the hardware on the first frame that carries the button bit (the ignition_can
+// shape) and every TJA behavior below stays off until that latch. A car without the
+// button never sees the bit, so it never leaves stock behavior.
+#define MAZDA_TJA_BUTTON_BIT 11U
+static bool mazda_tja_mads = false;
+static bool mazda_tja_seen = false;
+// The body's raw MRCC armed state, both rx paths. Once the TJA latch is active this feeds
+// only the MRCC_OFF cleanup gate; acc_main_on itself stays frozen so cruise state can
+// neither arm nor drop lateral.
+static bool mazda_acc_armed = false;
+
+static bool mazda_tja_active(void) {
+  return mazda_tja_mads && mazda_tja_seen;
+}
+
+
 // With longitudinal control the stock radar is silenced and openpilot replays its frames,
 // so allowed tx patterns are pinned to byte-exact stock captures wherever possible.
 
@@ -132,22 +150,33 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
     if ((msg->addr == MAZDA_CRZ_CTRL) && !mazda_longitudinal) {
       bool cruise_engaged = msg->data[0] & 0x8U;
       pcm_cruise_check(cruise_engaged);
-      acc_main_on = GET_BIT(msg, 17U);
+      mazda_acc_armed = GET_BIT(msg, 17U);
+      if (!mazda_tja_active()) {
+        acc_main_on = GET_BIT(msg, 17U);
+      }
     }
 
-    if ((msg->addr == MAZDA_CRZ_BTNS) && mazda_longitudinal) {
-      // ensure the driver's cancel press always exits controls
-      bool cancel = GET_BIT(msg, 0U);
-      if (cancel) {
-        controls_allowed = false;
+    if (msg->addr == MAZDA_CRZ_BTNS) {
+      if (mazda_tja_mads && !mazda_tja_seen && (GET_LEN(msg) >= 2U) && GET_BIT(msg, MAZDA_TJA_BUTTON_BIT)) {
+        mazda_tja_seen = true;
       }
-      // RES, SET_P or SET_M: the driver-intent half of the engagement qualifier below
-      if (GET_BIT(msg, 2U) || GET_BIT(msg, 4U) || GET_BIT(msg, 5U)) {
-        mazda_engage_btn_frames = MAZDA_ENGAGE_BTN_WINDOW;
-      } else if (mazda_engage_btn_frames > 0U) {
-        mazda_engage_btn_frames -= 1U;
-      } else {
-        // window already expired: nothing to decay
+      if (mazda_tja_active()) {
+        mads_button_press = GET_BIT(msg, MAZDA_TJA_BUTTON_BIT) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
+      }
+      if (mazda_longitudinal) {
+        // ensure the driver's cancel press always exits controls
+        bool cancel = GET_BIT(msg, 0U);
+        if (cancel) {
+          controls_allowed = false;
+        }
+        // RES, SET_P or SET_M: the driver-intent half of the engagement qualifier below
+        if (GET_BIT(msg, 2U) || GET_BIT(msg, 4U) || GET_BIT(msg, 5U)) {
+          mazda_engage_btn_frames = MAZDA_ENGAGE_BTN_WINDOW;
+        } else if (mazda_engage_btn_frames > 0U) {
+          mazda_engage_btn_frames -= 1U;
+        } else {
+          // window already expired: nothing to decay
+        }
       }
     }
 
@@ -175,9 +204,14 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
         bool acc_armed = GET_BIT(msg, 2U) || cruise_engaged;
 
         if (acc_armed || cruise_engaged_prev || (!brake && !brake_pressed_prev)) {
+          // raw armed state for the MRCC_OFF gate, without the radar-silence qualifier:
+          // the cleanup may only run while the body truly says MRCC is armed
+          mazda_acc_armed = acc_armed;
           // gated on the latch so the MADS arming edge lands on the same frame as the
           // software's cruiseState.available, and both machines arm together
-          acc_main_on = acc_armed && mazda_radar_was_silenced;
+          if (!mazda_tja_active()) {
+            acc_main_on = acc_armed && mazda_radar_was_silenced;
+          }
           // Arm only on an engaged rising edge backed by a recent SET/RES press, the
           // hyundai_common form: ACC_ACTIVE alone is the body answering frames we fabricate.
           // The tx hooks already drop engaged-claiming frames while controls are not
@@ -205,6 +239,14 @@ static bool mazda_is_lka_addr(int addr) {
 // axis engages. Either axis, not lateral alone: the controller still sends idle 0x243.
 static bool mazda_openpilot_controlling(void) {
   return controls_allowed || controls_allowed_lateral;
+}
+
+// Byte-exact MRCC master tap: every wheel bit at rest, BIT1 low with its inverted twin
+// high, only the counter nibble free.
+static bool mazda_mrcc_off_msg_valid(const CANPacket_t *msg) {
+  return (GET_LEN(msg) == 8U) && (msg->data[0] == 0x00U) && (msg->data[1] == 0x81U) &&
+         (msg->data[2] == 0xfeU) && ((msg->data[3] & 0xc3U) == 0xc0U) && (msg->data[4] == 0x00U) &&
+         (msg->data[5] == 0x00U) && (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
 }
 
 static bool mazda_tx_hook(const CANPacket_t *msg) {
@@ -315,7 +357,11 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     // allow resume spamming while controls allowed, but
     // only allow cancel while controls not allowed
     bool cancel_cmd = (msg->data[0] == 0x1U);
-    if (!controls_allowed && !cancel_cmd) {
+    // the TJA cleanup's MRCC master tap: a byte-exact physical press, allowed only while
+    // the body reports MRCC armed and the TJA hardware is latched. The counter nibble is
+    // free; every other bit is pinned (verified against the packed frame 00 81 fe cX ...).
+    bool mrcc_off_cmd = mazda_tja_active() && mazda_acc_armed && mazda_mrcc_off_msg_valid(msg);
+    if (!controls_allowed && !cancel_cmd && !mrcc_off_cmd) {
       tx = false;
     }
   }
@@ -339,6 +385,18 @@ static bool mazda_fwd_hook(int bus_num, int addr) {
   }
 
   return block_msg;
+}
+
+// Clear the TJA bit on the bus-0 copy that crosses to the camera once the button belongs
+// to openpilot. The camera would otherwise arm its own TJA and could take the steering
+// the next time openpilot drops lateral. The original frame keeps the bit for the body
+// and the MADS button tracking; every other bit passes untouched, and with MADS off the
+// button stays stock end to end.
+static void mazda_fwd_modify(int bus_num, CANPacket_t *msg) {
+  if (mazda_tja_active() && m_mads_state.system_enabled && (bus_num == MAZDA_MAIN) &&
+      (msg->addr == MAZDA_CRZ_BTNS) && (GET_LEN(msg) >= 2U)) {
+    msg->data[MAZDA_TJA_BUTTON_BIT / 8U] &= (uint8_t)~(1U << (MAZDA_TJA_BUTTON_BIT % 8U));
+  }
 }
 
 static safety_config mazda_init(uint16_t param) {
@@ -401,6 +459,9 @@ static safety_config mazda_init(uint16_t param) {
   };
 
   mazda_longitudinal = GET_FLAG(param, MAZDA_PARAM_LONGITUDINAL);
+  mazda_tja_mads = GET_FLAG(param, MAZDA_PARAM_TJA_MADS);
+  mazda_tja_seen = false;
+  mazda_acc_armed = false;
   acc_main_on = false;
 
   return mazda_longitudinal ? BUILD_SAFETY_CFG(mazda_long_rx_checks, MAZDA_LONG_TX_MSGS) :
@@ -412,4 +473,5 @@ const safety_hooks mazda_hooks = {
   .rx = mazda_rx_hook,
   .tx = mazda_tx_hook,
   .fwd = mazda_fwd_hook,
+  .fwd_modify = mazda_fwd_modify,
 };

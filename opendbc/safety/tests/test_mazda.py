@@ -373,6 +373,207 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
         self.assertTrue(self._tx(msg))
 
 
+class TestMazdaTjaMadsSafety(TestMazdaSafety):
+  # TJA_MADS without latched hardware must behave exactly like param 0. The latch fires on
+  # the first CRZ_BTNS frame carrying bit 11, a wheel bit only TJA-package cars transmit.
+  SAFETY_PARAM = MazdaSafetyFlags.TJA_MADS
+
+  def setUp(self):
+    self.packer = CANPackerSafety("mazda_2017")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, int(self.SAFETY_PARAM))
+    self.safety.init_tests()
+
+  def _tja_msg(self, pressed):
+    return self.packer.make_can_msg_safety("CRZ_BTNS", 0, {
+      "TJA_BUTTON": pressed, "BIT1": 1, "BIT2": 1, "BIT3": 1,
+    })
+
+  def _mrcc_armed_msg(self, armed):
+    return self.packer.make_can_msg_safety("CRZ_CTRL", 0, {"CRZ_AVAILABLE": armed})
+
+  def _mrcc_tap_msg(self):
+    return self.packer.make_can_msg_safety("CRZ_BTNS", 0, {
+      "CAN_OFF": 0, "CAN_OFF_INV": 1, "SET_P": 0, "SET_P_INV": 1, "RES": 0, "RES_INV": 1,
+      "SET_M": 0, "SET_M_INV": 1, "DISTANCE_LESS": 0, "DISTANCE_LESS_INV": 1,
+      "DISTANCE_MORE": 0, "DISTANCE_MORE_INV": 1, "TJA_BUTTON": 0,
+      "MODE_X": 0, "MODE_X_INV": 1, "MODE_Y": 0, "MODE_Y_INV": 1,
+      "BIT1": 0, "BIT1_INV": 1, "BIT2": 1, "BIT3": 1, "CTR": 5,
+    })
+
+  @staticmethod
+  def _packet_bytes(msg):
+    return bytes(msg[0].data[0:8])
+
+  def test_no_button_no_change_from_stock(self):
+    # the param alone changes nothing: acc_main still follows MRCC availability
+    self.safety.set_mads_params(True, False, False)
+    self._rx(self._mrcc_armed_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self._rx(self._mrcc_armed_msg(False))
+    self.assertFalse(self.safety.get_acc_main_on())
+
+  def test_first_button_frame_latches_and_arms_lateral(self):
+    self.safety.set_mads_params(True, False, False)
+    self._rx(self._tja_msg(True))
+    self.assertEqual(1, self.safety.get_mads_button_press())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self.assertFalse(self.safety.get_acc_main_on())
+    # releasing the button holds lateral; only the toggle exit drops it
+    self._rx(self._tja_msg(False))
+    self.assertEqual(0, self.safety.get_mads_button_press())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_latch_resets_on_safety_reinit(self):
+    self.safety.set_mads_params(True, False, False)
+    self._rx(self._tja_msg(True))
+    self.setUp()
+    self._rx(self._mrcc_armed_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+
+  def test_mrcc_no_longer_drives_lateral_either_way(self):
+    # latch under MADS off so lateral starts clear, then enable MADS mid-drive
+    self.safety.set_mads_params(False, False, False)
+    self._rx(self._tja_msg(True))
+    self._rx(self._tja_msg(False))
+    self.safety.set_mads_params(True, False, False)
+
+    # arming grants nothing...
+    self._rx(self._mrcc_armed_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+    # ...and a full disarm must not revoke a TJA-armed lateral
+    self._rx(self._tja_msg(True))
+    self._rx(self._tja_msg(False))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self._rx(self._mrcc_armed_msg(False))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_stock_cruise_state_survives_the_latch(self):
+    # controls_allowed, the longitudinal backstop, still tracks CRZ_ACTIVE
+    self._rx(self._speed_msg(100))
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+    self._rx(self._pcm_status_msg(False))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_forward_copy_strips_only_the_tja_bit_once_latched(self):
+    original = bytearray((index * 37 + 11) & 0xff for index in range(8))
+    original[1] |= 0x08
+
+    # param without hardware: the copy passes untouched
+    forwarded = libsafety_py.make_CANPacket(0x09d, 0, bytes(original))
+    self.safety.safety_fwd_modify(0, forwarded)
+    self.assertEqual(bytes(original), self._packet_bytes(forwarded))
+
+    # latched with MADS on: exactly bit 11 cleared, every other bit preserved
+    self.safety.set_mads_params(True, False, False)
+    self._rx(self._tja_msg(True))
+    forwarded = libsafety_py.make_CANPacket(0x09d, 0, bytes(original))
+    self.safety.safety_fwd_modify(0, forwarded)
+    expected = bytearray(original)
+    expected[1] &= 0xf7
+    self.assertEqual(bytes(expected), self._packet_bytes(forwarded))
+
+    # other bus, other address, MADS off: untouched
+    forwarded = libsafety_py.make_CANPacket(0x09d, 2, bytes(original))
+    self.safety.safety_fwd_modify(2, forwarded)
+    self.assertEqual(bytes(original), self._packet_bytes(forwarded))
+    forwarded = libsafety_py.make_CANPacket(0x21c, 0, bytes(original))
+    self.safety.safety_fwd_modify(0, forwarded)
+    self.assertEqual(bytes(original), self._packet_bytes(forwarded))
+    self.safety.set_mads_params(False, False, False)
+    forwarded = libsafety_py.make_CANPacket(0x09d, 0, bytes(original))
+    self.safety.safety_fwd_modify(0, forwarded)
+    self.assertEqual(bytes(original), self._packet_bytes(forwarded))
+
+  def test_mrcc_tap_allowed_only_latched_and_armed(self):
+    self.safety.set_controls_allowed(False)
+
+    # stock param: never
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, 0)
+    self.safety.init_tests()
+    self._rx(self._mrcc_armed_msg(True))
+    self.assertFalse(self._tx(self._mrcc_tap_msg()))
+
+    # TJA param, button never seen: never
+    self.setUp()
+    self._rx(self._mrcc_armed_msg(True))
+    self.assertFalse(self._tx(self._mrcc_tap_msg()))
+
+    # latched but MRCC disarmed: never
+    self._rx(self._mrcc_armed_msg(False))
+    self._rx(self._tja_msg(True))
+    self.assertFalse(self._tx(self._mrcc_tap_msg()))
+
+    # latched and armed: the bounded cleanup tap
+    self._rx(self._mrcc_armed_msg(True))
+    self.assertTrue(self._tx(self._mrcc_tap_msg()))
+
+    # disarm closes the gate again
+    self._rx(self._mrcc_armed_msg(False))
+    self.assertFalse(self._tx(self._mrcc_tap_msg()))
+
+    # one flipped bit is not the physical tap
+    self._rx(self._mrcc_armed_msg(True))
+    tap = bytearray(self._packet_bytes(self._mrcc_tap_msg()))
+    tap[2] ^= 0x10
+    self.assertFalse(self._tx(libsafety_py.make_CANPacket(0x09d, 0, bytes(tap))))
+
+
+class TestMazdaLongitudinalTjaMadsSafety(TestMazdaLongitudinalSafety):
+  # the longitudinal variant: CRZ_CTRL is gone, so PEDALS carries both the armed state and
+  # the frozen acc_main the latch leaves behind
+  SAFETY_PARAM = MazdaSafetyFlags.LONG | MazdaSafetyFlags.TJA_MADS
+
+  def setUp(self):
+    self.packer = CANPackerSafety("mazda_2017")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, int(self.SAFETY_PARAM))
+    self.safety.init_tests()
+
+  def _tja_msg(self, pressed):
+    return self.packer.make_can_msg_safety("CRZ_BTNS", 0, {
+      "TJA_BUTTON": pressed, "BIT1": 1, "BIT2": 1, "BIT3": 1,
+    })
+
+  def _mrcc_tap_msg(self):
+    return self.packer.make_can_msg_safety("CRZ_BTNS", 0, {
+      "CAN_OFF": 0, "CAN_OFF_INV": 1, "SET_P": 0, "SET_P_INV": 1, "RES": 0, "RES_INV": 1,
+      "SET_M": 0, "SET_M_INV": 1, "DISTANCE_LESS": 0, "DISTANCE_LESS_INV": 1,
+      "DISTANCE_MORE": 0, "DISTANCE_MORE_INV": 1, "TJA_BUTTON": 0,
+      "MODE_X": 0, "MODE_X_INV": 1, "MODE_Y": 0, "MODE_Y_INV": 1,
+      "BIT1": 0, "BIT1_INV": 1, "BIT2": 1, "BIT3": 1, "CTR": 5,
+    })
+
+  def _master_the_radar(self):
+    self.safety.set_mads_params(True, False, False)
+    self.assertTrue(self._tx(common.make_msg(0, 0x21b, 8, self.SYNTHETIC_CRZ_INFO_STANDBY)))
+    for _ in range(60):
+      self._rx(self._acc_armed_msg(True))
+
+  def test_button_arms_lateral_and_freezes_acc_main_at_the_latched_state(self):
+    self._master_the_radar()
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+    self._rx(self._tja_msg(True))
+    self._rx(self._tja_msg(False))
+    # armed or disarmed, PEDALS no longer moves acc_main or lateral
+    self._rx(self._acc_armed_msg(False))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self._rx(self._acc_armed_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+
+  def test_pedals_armed_state_feeds_the_tap_gate(self):
+    self.safety.set_controls_allowed(False)
+    self._rx(self._acc_armed_msg(True))
+    self._rx(self._tja_msg(True))
+    self.assertTrue(self._tx(self._mrcc_tap_msg()))
+    self._rx(self._acc_armed_msg(False))
+    self.assertFalse(self._tx(self._mrcc_tap_msg()))
+
+
 class TestMazdaIgnition(unittest.TestCase):
   TX_MSGS: list = []
 

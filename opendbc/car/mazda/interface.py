@@ -27,6 +27,13 @@ class CarInterface(CarInterfaceBase):
     if not steer_to_zero:
       ret.minSteerSpeed = LKAS_LIMITS.DISABLE_SPEED * CV.KPH_TO_MS
 
+    # Capability flag only: the CX-5 2022 is the one Mazda wheel family verified to carry
+    # the physical TJA button (CRZ_BTNS bit 11), and most of its trims carry no button at
+    # all. The panda latches the hardware on the button's first frame and keeps the whole
+    # TJA path off until then, so a buttonless CX-5 2022 stays byte-for-byte stock.
+    if candidate == CAR.MAZDA_CX5_2022:
+      ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TJA_MADS.value
+
     # CX-9 2021 verified against route 00000004--97e4328f4f: same message set at the same
     # rates, CRZ_INFO checksum holds on all 54k stock frames, radar UDS at 0x764, and the
     # same FSC camera firmware (GSH7-67XK2-U) as the CX-5 2022 this was developed on.

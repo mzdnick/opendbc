@@ -64,7 +64,7 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
         # advances between consecutive sends at this cadence, so a fixed +1 offset stays
         # unique (see HOLD_PERIOD above for the measured wire behavior).
         if since_last_send > HOLD_PERIOD:
-          can_sends.append(mazdacan.create_button_cmd(packer, self.CP, CS.crz_btns_counter + 1, send_button))
+          can_sends.append(mazdacan.create_button_cmd(packer, self.CP, CS.crz_btns_counter + 1, send_button, CS))
           self.last_button_frame = self.frame
       else:
         # Discrete tap, paced to the ECU's registration floor
@@ -72,7 +72,7 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
           self.button_frame += 1
           button_counter_offset = [1, 1, 0, None][self.button_frame % 4]
           if button_counter_offset is not None:
-            can_sends.append(mazdacan.create_button_cmd(packer, self.CP, CS.crz_btns_counter + button_counter_offset, send_button))
+            can_sends.append(mazdacan.create_button_cmd(packer, self.CP, CS.crz_btns_counter + button_counter_offset, send_button, CS))
             self.last_button_frame = self.frame
 
     return can_sends

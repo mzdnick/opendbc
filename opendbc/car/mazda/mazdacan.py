@@ -1,5 +1,5 @@
 from opendbc.car.can_definitions import CanData
-from opendbc.car.mazda.values import Buttons
+from opendbc.car.mazda.values import Buttons, has_tja_mads
 
 # Radar frames the body ECU expects to keep receiving for stop-and-go to work. Byte-exact
 # captures from a 0x764 radar with no objects in view; only the counter nibble in the last
@@ -210,11 +210,21 @@ def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool)
   return packer.make_can_msg("CAM_LANEINFO", 0, values)
 
 
-def create_button_cmd(packer, CP, counter, button):
+def create_button_cmd(packer, CP, counter, button, CS=None):
   can = int(button == Buttons.CANCEL)
   res = int(button == Buttons.RESUME)
   inc = int(button == Buttons.SET_PLUS)
   dec = int(button == Buttons.SET_MINUS)
+  mrcc_button = int(button == Buttons.MRCC_OFF)
+
+  # Echo the live wheel state while speaking over it, but only on a latched TJA car: there
+  # a zeroed synthetic frame fabricates a TJA or MODE release mid-hold, and anywhere else
+  # preserved bits would write wheel lines that car's hardware never transmits.
+  tja = mode_x = mode_y = 0
+  if CS is not None and has_tja_mads(CP) and getattr(CS, "tja_hw_seen", False):
+    tja = int(getattr(CS, "tja_button", 0) == 1)
+    mode_x = int(getattr(CS, "mode_x", 0) == 1)
+    mode_y = int(getattr(CS, "mode_y", 0) == 1)
 
   values = {
     "CAN_OFF": can,
@@ -235,13 +245,16 @@ def create_button_cmd(packer, CP, counter, button):
     "DISTANCE_MORE": 0,
     "DISTANCE_MORE_INV": 1,
 
-    "MODE_X": 0,
-    "MODE_X_INV": 1,
+    "TJA_BUTTON": tja,
+    "MODE_X": mode_x,
+    "MODE_X_INV": (mode_x + 1) % 2,
 
-    "MODE_Y": 0,
-    "MODE_Y_INV": 1,
+    "MODE_Y": mode_y,
+    "MODE_Y_INV": (mode_y + 1) % 2,
 
-    "BIT1": 1,
+    # BIT1 is the active-low MRCC master: high at rest, low only for the cleanup tap
+    "BIT1": 1 - mrcc_button,
+    "BIT1_INV": mrcc_button,
     "BIT2": 1,
     "BIT3": 1,
     "CTR": (counter + 1) % 16,

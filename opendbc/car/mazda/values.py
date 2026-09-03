@@ -234,6 +234,11 @@ class MazdaSafetyFlags(IntFlag):
   TJA_MADS = 4
 
 
+def has_tja_mads(CP) -> bool:
+  """Platform capability only. The TJA hardware itself latches at runtime."""
+  return any(int(sc.safetyParam) & MazdaSafetyFlags.TJA_MADS for sc in CP.safetyConfigs)
+
+
 class WMI(StrEnum):
   JAPAN_PASSENGER = "JM1"   # Japan-built passenger cars
   JAPAN_CROSSOVER = "JM3"   # Japan-built crossovers

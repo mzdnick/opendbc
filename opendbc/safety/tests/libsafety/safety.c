@@ -313,6 +313,14 @@ void set_heartbeat_engaged_mads(bool c){
   heartbeat_engaged_mads = c;
 }
 
+void set_mads_button_press_test(int pressed){
+  mads_button_press = (pressed == 1) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
+}
+
+bool get_mads_button_toggles_lateral(void){
+  return m_mads_state.mads_button_toggles_lateral;
+}
+
 void set_steering_disengage(bool c){
   steering_disengage = c;
 }

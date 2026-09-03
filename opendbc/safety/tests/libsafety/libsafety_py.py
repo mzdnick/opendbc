@@ -143,6 +143,8 @@ void set_mads_params(bool enable_mads, bool disengage_lateral_on_brake, bool pau
 void mads_apply_alternative_experience(int mode);
 void tick_mads_state(bool vm, bool acc_main, bool op_allowed, bool braking, bool steering_disengage);
 void set_heartbeat_engaged_mads(bool c);
+void set_mads_button_press_test(int pressed);
+bool get_mads_button_toggles_lateral(void);
 void mads_heartbeat_engaged_check(void);
 void set_steering_disengage(bool c);
 int get_gas_interceptor_prev(void);

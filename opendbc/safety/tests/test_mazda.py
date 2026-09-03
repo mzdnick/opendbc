@@ -431,6 +431,47 @@ class TestMazdaTjaMadsSafety(TestMazdaSafety):
     self._rx(self._mrcc_armed_msg(True))
     self.assertTrue(self.safety.get_acc_main_on())
 
+  def test_second_press_disengages_lateral(self):
+    self.safety.set_mads_params(True, False, False)
+    self._rx(self._tja_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self._rx(self._tja_msg(False))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    # the same press toggles lateral back off, and it stays off on release
+    self._rx(self._tja_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+    self._rx(self._tja_msg(False))
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+    # and on again: the toggle repeats
+    self._rx(self._tja_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_toggle_mode_arrives_with_the_latch_and_leaves_on_reinit(self):
+    self.safety.set_mads_params(True, False, False)
+    self.assertFalse(self.safety.get_mads_button_toggles_lateral())
+    self._rx(self._tja_msg(True))
+    self.assertTrue(self.safety.get_mads_button_toggles_lateral())
+    # a MADS params refresh keeps the car's button semantics
+    self.safety.set_mads_params(True, True, False)
+    self.assertTrue(self.safety.get_mads_button_toggles_lateral())
+    self.setUp()
+    self.assertFalse(self.safety.get_mads_button_toggles_lateral())
+
+  def test_button_stays_request_only_without_the_toggle_mode(self):
+    # every other mode keeps stock MADS semantics: a press while lateral is on requests
+    # nothing and exits nothing
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, 0)
+    self.safety.init_tests()
+    self.safety.set_mads_params(True, False, False)
+    self.safety.set_mads_button_press_test(1)
+    self._rx(self._speed_msg(100))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self.safety.set_mads_button_press_test(0)
+    self._rx(self._speed_msg(100))
+    self.safety.set_mads_button_press_test(1)
+    self._rx(self._speed_msg(100))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
   def test_mrcc_no_longer_drives_lateral_either_way(self):
     # latch under MADS off so lateral starts clear, then enable MADS mid-drive
     self.safety.set_mads_params(False, False, False)
@@ -556,8 +597,15 @@ class TestMazdaLongitudinalTjaMadsSafety(TestMazdaLongitudinalSafety):
     self.assertTrue(self.safety.get_acc_main_on())
     self.assertTrue(self.safety.get_controls_allowed_lateral())
 
+    # the first press latches the hardware and toggles lateral off (it was on);
+    # the second toggles it back on, now button-owned
     self._rx(self._tja_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
     self._rx(self._tja_msg(False))
+    self._rx(self._tja_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self._rx(self._tja_msg(False))
+
     # armed or disarmed, PEDALS no longer moves acc_main or lateral
     self._rx(self._acc_armed_msg(False))
     self.assertTrue(self.safety.get_acc_main_on())

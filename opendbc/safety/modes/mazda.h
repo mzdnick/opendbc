@@ -159,6 +159,8 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
     if (msg->addr == MAZDA_CRZ_BTNS) {
       if (mazda_tja_mads && !mazda_tja_seen && (GET_LEN(msg) >= 2U) && GET_BIT(msg, MAZDA_TJA_BUTTON_BIT)) {
         mazda_tja_seen = true;
+        // the button is a physical toggle for lateral from here on
+        mads_set_button_toggles_lateral(true);
       }
       if (mazda_tja_active()) {
         mads_button_press = GET_BIT(msg, MAZDA_TJA_BUTTON_BIT) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
@@ -462,6 +464,7 @@ static safety_config mazda_init(uint16_t param) {
   mazda_tja_mads = GET_FLAG(param, MAZDA_PARAM_TJA_MADS);
   mazda_tja_seen = false;
   mazda_acc_armed = false;
+  mads_set_button_toggles_lateral(false);
   acc_main_on = false;
 
   return mazda_longitudinal ? BUILD_SAFETY_CFG(mazda_long_rx_checks, MAZDA_LONG_TX_MSGS) :

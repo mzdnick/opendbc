@@ -7,7 +7,7 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, RADAR_ADDR, AdvertisedLead, RadarSessionManager,
                                             RadarSessionState, StandstillHold, create_radar_session_msg)
-from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags
+from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags, has_tja_mads
 
 from opendbc.sunnypilot.car.mazda.icbm import IntelligentCruiseButtonManagementInterface
 
@@ -17,6 +17,15 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 # Synthetic radar frames go to the car and to the camera; the panda only forwards
 # received frames between those buses, not our own transmissions.
 LONG_BUSES = (0, 2)
+
+# A TJA press from MRCC-off arms MRCC as a side effect. The cleanup replays the physical
+# MRCC master tap after release to undo it: at most TJA_CLEANUP_MAX_TX frames, paced to
+# the wheel's own 10 Hz counter slots, confirmed only by the raw armed state.
+TJA_CLEANUP_MAX_TX = 3
+TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES = 5
+TJA_CLEANUP_FIRST_TX_DELAY_NANOS = 50_000_000
+TJA_CLEANUP_ARM_TIMEOUT_NANOS = 1_000_000_000
+TJA_CLEANUP_SLOT_TIMEOUT_NANOS = 500_000_000
 
 
 class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterface):
@@ -39,6 +48,16 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.accel_last = 0.
     self.release_ramp = None
     self.breakaway_frames = 0
+    self.tja_button_prev = False
+    self.tja_raw_off_frames = 0
+    self.tja_cleanup_pending = False
+    self.tja_cleanup_saw_armed = False
+    self.tja_cleanup_tx = 0
+    self.tja_cleanup_slot: int | None = None
+    self.tja_cleanup_press_nanos: int | None = None
+    self.tja_cleanup_release_nanos: int | None = None
+    self.tja_cleanup_progress_nanos: int | None = None
+    self.tja_cleanup_tx_this_frame = False
 
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
@@ -99,6 +118,86 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       if self.resume_requested(CC) and self.frame % 5 == 0:
         can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.RESUME, CS))
 
+    # Undo only TJA-caused MRCC arming. Ownership requires the press to start from a
+    # stably-off MRCC; a press onto an armed MRCC arms nothing we own. The driver wins
+    # every time: any physical wheel input aborts the cleanup, and openpilot's own
+    # cancel/resume takes the CRZ_BTNS bus, aborting once our frames have gone out and
+    # holding off before that. The raw armed state, not the brake-held public state,
+    # confirms the result.
+    self.tja_cleanup_tx_this_frame = False
+    if has_tja_mads(self.CP) and CS.tja_hw_seen:
+      tja_pressed = bool(CS.tja_button) and not self.tja_button_prev
+      tja_released = (not CS.tja_button) and self.tja_button_prev
+      raw_armed = bool(CS.mrcc_armed_raw)
+      self.tja_raw_off_frames = 0 if raw_armed else self.tja_raw_off_frames + 1
+      driver_button = bool(CS.cancel_button or CS.resume_button or CS.accel_button or
+                           CS.decel_button or CS.mrcc_button)
+      op_button = bool(CC.cruiseControl.cancel or CC.cruiseControl.resume)
+
+      def cleanup_done():
+        self.tja_cleanup_pending = False
+        self.tja_cleanup_saw_armed = False
+        self.tja_cleanup_tx = 0
+        self.tja_cleanup_slot = None
+        self.tja_cleanup_press_nanos = None
+        self.tja_cleanup_release_nanos = None
+        self.tja_cleanup_progress_nanos = None
+
+      if tja_pressed:
+        # a re-press interrupts an in-flight hold; the frame budget never refunds mid-episode
+        self.tja_cleanup_release_nanos = None
+        self.tja_cleanup_progress_nanos = None
+        self.tja_cleanup_slot = None
+        if not self.tja_cleanup_pending:
+          if (not raw_armed) and (self.tja_raw_off_frames >= TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES):
+            self.tja_cleanup_pending = True
+            self.tja_cleanup_saw_armed = False
+            self.tja_cleanup_tx = 0
+        self.tja_cleanup_press_nanos = now_nanos
+
+      elif self.tja_cleanup_pending:
+        self.tja_cleanup_saw_armed = self.tja_cleanup_saw_armed or raw_armed
+
+        if driver_button or (op_button and self.tja_cleanup_tx > 0):
+          cleanup_done()
+        elif self.tja_cleanup_saw_armed and (self.tja_raw_off_frames >= TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES):
+          # MRCC went back off: finished, whether our tap or the driver did it
+          cleanup_done()
+        elif (not self.tja_cleanup_saw_armed) and (self.tja_cleanup_press_nanos is not None) and \
+                (now_nanos - self.tja_cleanup_press_nanos > TJA_CLEANUP_ARM_TIMEOUT_NANOS):
+          # the side-effect arming never came: nothing to undo
+          cleanup_done()
+        else:
+          if tja_released:
+            self.tja_cleanup_release_nanos = now_nanos
+            self.tja_cleanup_progress_nanos = now_nanos
+            # taps already sent and MRCC fell before this release: finished
+            if (self.tja_cleanup_tx > 0) and (not raw_armed):
+              cleanup_done()
+          if not self.tja_cleanup_pending:
+            pass
+          elif self.tja_cleanup_release_nanos is None:
+            # button still held: no stall clock runs, the arm timeout above covers it
+            pass
+          elif (self.tja_cleanup_progress_nanos is None) or \
+                  (now_nanos - self.tja_cleanup_progress_nanos > TJA_CLEANUP_SLOT_TIMEOUT_NANOS):
+            # released but the slots stopped advancing: give up
+            cleanup_done()
+          elif (raw_armed and self.tja_cleanup_saw_armed and
+                (self.tja_cleanup_tx < TJA_CLEANUP_MAX_TX) and not op_button and
+                (CS.crz_btns_counter != self.tja_cleanup_slot) and
+                (now_nanos - self.tja_cleanup_release_nanos >= TJA_CLEANUP_FIRST_TX_DELAY_NANOS)):
+            can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter,
+                                                        Buttons.MRCC_OFF, CS))
+            self.tja_cleanup_tx_this_frame = True
+            self.tja_cleanup_tx += 1
+            self.tja_cleanup_slot = CS.crz_btns_counter
+            self.tja_cleanup_progress_nanos = now_nanos
+            if self.tja_cleanup_tx >= TJA_CLEANUP_MAX_TX:
+              cleanup_done()
+
+      self.tja_button_prev = bool(CS.tja_button)
+
     self.apply_torque_last = apply_torque
 
     if self.CP.openpilotLongitudinalControl:
@@ -120,7 +219,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # Suppress ICBM CRZ_BTNS spam while cancel/resume are in flight or while the driver is
     # holding the wheel cancel button. Without this guard ICBM's interleaved cancel=0 frames
     # race the driver's cancel=1 frames on the bus and the body ECU drops the cancel intent.
-    icbm_suppress = CC.cruiseControl.cancel or CC.cruiseControl.resume or CS.cancel_button == 1
+    # A TJA hold and its cleanup tap own the same address for the same reason.
+    icbm_suppress = (CC.cruiseControl.cancel or CC.cruiseControl.resume or CS.cancel_button == 1 or
+                     (has_tja_mads(self.CP) and CS.tja_hw_seen and
+                      (bool(CS.tja_button) or self.tja_cleanup_pending or self.tja_cleanup_tx_this_frame)))
     if not icbm_suppress:
       can_sends.extend(IntelligentCruiseButtonManagementInterface.update(self, CC_SP, CS, self.packer, self.frame, self.last_button_frame))
 

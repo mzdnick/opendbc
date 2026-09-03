@@ -10,7 +10,8 @@ import pytest
 from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.carcontroller import CarController
+from opendbc.car.mazda.carcontroller import (TJA_CLEANUP_FIRST_TX_DELAY_NANOS, TJA_CLEANUP_MAX_TX,
+                                             TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES, CarController)
 from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, LEAD_DEBOUNCE_FRAMES, RADAR_SESSION_LIMIT_FRAMES,
                                             RELEASE_DEBOUNCE_FRAMES, RESUME_UNLATCH_LATCHED_FRAMES,
                                             AdvertisedLead, RadarSessionManager, RadarSessionState, StandstillHold)
@@ -515,7 +516,9 @@ def _mock_cc(long_active=True, accel=0.5, long_state=None, standstill=False, gas
              resume=False, cancel=False, lead_visible=True, gap=2, available=True,
              stock_radar_alive=False, fsc_settled=True, handback=False, cruise_engaged=False,
              enabled=None, lead_d_rel=12.0, lead_v_rel=0.0, brake_hold=False, brake_pressed=False,
-             radar_was_silenced=False):
+             radar_was_silenced=False, tja=0, tja_hw_seen=False, mrcc_armed_raw=False,
+             mrcc_button=0, accel_button=0, decel_button=0, crz_btns_counter=0,
+             cancel_button=0, resume_button=0, icbm_send_button=None):
   # openpilot is enabled whenever it is longitudinally active; a gas override is the case
   # where it stays enabled with longActive low. The mock carries everything the full
   # CarController.update() path reads, so tests can drive update() as well as
@@ -531,12 +534,22 @@ def _mock_cc(long_active=True, accel=0.5, long_state=None, standstill=False, gas
   cc = SimpleNamespace(enabled=enabled, longActive=long_active, latActive=False,
                        actuators=actuators, cruiseControl=cruise, hudControl=hud)
   cc_sp = SimpleNamespace(stockEcuHandBack=handback,
-                          leadOne=SimpleNamespace(dRel=lead_d_rel, vRel=lead_v_rel))
-  cs = SimpleNamespace(out=out, resume_button=0, brake_hold=brake_hold,
+                          leadOne=SimpleNamespace(dRel=lead_d_rel, vRel=lead_v_rel),
+                          intelligentCruiseButtonManagement=SimpleNamespace(
+                            sendButton=icbm_send_button if icbm_send_button is not None
+                            else structs.IntelligentCruiseButtonManagement.SendButtonState.none))
+  cs = SimpleNamespace(out=out, resume_button=resume_button, brake_hold=brake_hold,
                        stock_radar_alive=stock_radar_alive, fsc_settled=fsc_settled,
                        radar_session_refused=False, radar_was_silenced=radar_was_silenced,
-                       crz_btns_counter=0, cancel_button=0, lkas_allowed_speed=True,
-                       cam_lkas={"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0})
+                       crz_btns_counter=crz_btns_counter, cancel_button=cancel_button, lkas_allowed_speed=True,
+                       cam_lkas={"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0},
+                       cam_laneinfo={key: 0 for key in (
+                         "LINE_VISIBLE", "LINE_NOT_VISIBLE", "LANE_LINES", "BIT1", "BIT2", "BIT3",
+                         "NO_ERR_BIT", "ERR_BIT", "S1", "S1_HBEAM")},
+                       tja_button=int(tja), tja_hw_seen=tja_hw_seen,
+                       mrcc_armed_raw=mrcc_armed_raw, mrcc_button=mrcc_button,
+                       accel_button=accel_button, decel_button=decel_button,
+                       mode_x=0, mode_y=0)
   return cc, cc_sp, cs
 
 
@@ -1354,3 +1367,214 @@ class TestRadarSessionSequencing:
     # and settles back to silenced once quiet again
     sends = self._step(cc, stock_radar_alive=False, fsc_settled=True)
     assert SESSION_PROG_DAT not in self._uds(sends)
+
+
+class TestTjaMrccCleanup:
+  """A TJA press from MRCC-off arms MRCC as a side effect; the cleanup taps the MRCC master
+  after release to undo it. Ownership (press started from stably-off MRCC), driver priority,
+  raw-state confirmation, and the three-frame budget are the contract."""
+
+  STEP_NANOS = round(DT_CTRL * 1e9)
+
+  def _controller(self, candidate=CAR.MAZDA_CX5_2022):
+    CP = CarInterface.get_params(candidate, {0: {}, 1: {}, 2: {}}, [], alpha_long=False,
+                                 is_release=False, docs=False)
+    CP_SP = CarInterface.get_params_sp(CP, candidate, {0: {}, 1: {}, 2: {}}, [], False, False, False)
+    return CarController({Bus.pt: "mazda_2017"}, CP, CP_SP)
+
+  def _start(self, candidate=CAR.MAZDA_CX5_2022):
+    cc = self._controller(candidate)
+    self.nanos = 0
+    self.counter = -1
+    return cc
+
+  def _run(self, cc, *, tja=0, raw_armed=False, cancel=False, resume=False, tja_seen=True, **buttons):
+    """One 100 Hz control frame. The wheel counter advances every frame: a faster stand-in
+    for the 10 Hz native cadence that only ever makes slots arrive sooner."""
+    self.nanos += self.STEP_NANOS
+    self.counter = (self.counter + 1) % 16
+    control, control_sp, carstate = _mock_cc(
+      long_active=False, enabled=False, accel=0.,
+      long_state=structs.CarControl.Actuators.LongControlState.off,
+      available=raw_armed, cruise_engaged=False, cancel=cancel, resume=resume,
+      radar_was_silenced=False, fsc_settled=False, stock_radar_alive=False,
+      tja=tja, tja_hw_seen=tja_seen, mrcc_armed_raw=raw_armed,
+      crz_btns_counter=self.counter, **buttons)
+    _, sends = cc.update(control, control_sp, carstate, self.nanos)
+    return sends
+
+  @staticmethod
+  def _taps(sends):
+    """The MRCC master taps on the wire: CRZ_BTNS frames with BIT1 low."""
+    parser = CANParser("mazda_2017", [("CRZ_BTNS", float("nan"))], 0)
+    out = []
+    for addr, dat, bus in sends:
+      if addr == CRZ_BTNS and bus == 0:
+        parser.update([(0, [(addr, dat, bus)])])
+        if parser.vl["CRZ_BTNS"]["BIT1"] == 0:
+          out.append(dat)
+    return out
+
+  def _press_from_off(self, cc, *, arm_after=1):
+    # MRCC stably off, then a TJA press whose side-effect arming lands arm_after frames in
+    for _ in range(TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES + 1):
+      self._run(cc, raw_armed=False)
+    self._run(cc, tja=1, raw_armed=False)
+    for _ in range(arm_after):
+      self._run(cc, tja=1, raw_armed=True)
+    assert cc.tja_cleanup_pending
+
+  def test_release_taps_the_master_at_most_three_times(self):
+    cc = self._start()
+    self._press_from_off(cc)
+    taps = []
+    for _ in range(30):
+      taps += self._taps(self._run(cc, raw_armed=True))
+    assert len(taps) == TJA_CLEANUP_MAX_TX
+    assert not cc.tja_cleanup_pending
+    # and it stays finished
+    for _ in range(10):
+      assert not self._taps(self._run(cc, raw_armed=True))
+
+  def test_first_tap_waits_for_the_release_and_a_short_delay(self):
+    cc = self._start()
+    self._press_from_off(cc)
+    delay_frames = TJA_CLEANUP_FIRST_TX_DELAY_NANOS // self.STEP_NANOS
+    # still holding: no taps
+    for _ in range(5):
+      assert not self._taps(self._run(cc, tja=1, raw_armed=True))
+    # released: the first tap only after the delay has fully passed
+    for _ in range(delay_frames):
+      assert not self._taps(self._run(cc, raw_armed=True))
+    assert len(self._taps(self._run(cc, raw_armed=True))) == 1
+
+  def test_raw_off_confirmed_ends_the_cleanup_early(self):
+    cc = self._start()
+    self._press_from_off(cc)
+    taps = []
+    while not taps:
+      taps += self._taps(self._run(cc, raw_armed=True))
+    for _ in range(TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES):
+      assert not self._taps(self._run(cc, raw_armed=False))
+    assert not cc.tja_cleanup_pending
+    for _ in range(10):
+      assert not self._taps(self._run(cc, raw_armed=False))
+
+  def test_press_onto_an_armed_mrcc_owns_nothing(self):
+    cc = self._start()
+    for _ in range(10):
+      self._run(cc, raw_armed=True)
+    self._run(cc, tja=1, raw_armed=True)
+    self._run(cc, tja=0, raw_armed=True)
+    assert not cc.tja_cleanup_pending
+    for _ in range(20):
+      assert not self._taps(self._run(cc, raw_armed=True))
+
+  def test_missing_arming_never_taps(self):
+    cc = self._start()
+    for _ in range(TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES + 1):
+      self._run(cc, raw_armed=False)
+    self._run(cc, tja=1, raw_armed=False)
+    self._run(cc, tja=0, raw_armed=False)
+    # the episode ends by the stall timeout even though nothing was ever armed
+    for _ in range(80):
+      assert not self._taps(self._run(cc, raw_armed=False))
+    assert not cc.tja_cleanup_pending
+
+  @pytest.mark.parametrize("button", ["cancel_button", "resume_button", "accel_button", "decel_button", "mrcc_button"])
+  def test_any_physical_wheel_button_aborts(self, button):
+    cc = self._start()
+    self._press_from_off(cc)
+    taps = []
+    while not taps:
+      taps += self._taps(self._run(cc, raw_armed=True))
+    self._run(cc, raw_armed=True, **{button: 1})
+    assert not cc.tja_cleanup_pending
+    for _ in range(15):
+      assert not self._taps(self._run(cc, raw_armed=True))
+
+  def test_repress_interrupts_without_refunding_the_budget(self):
+    cc = self._start()
+    self._press_from_off(cc)
+    taps = []
+    while len(taps) < 1:
+      taps += self._taps(self._run(cc, raw_armed=True))
+    # interrupt the hold mid-flight, then complete the second episode
+    self._run(cc, tja=1, raw_armed=True)
+    self._run(cc, tja=0, raw_armed=True)
+    for _ in range(20):
+      taps += self._taps(self._run(cc, raw_armed=True))
+    assert len(taps) == TJA_CLEANUP_MAX_TX
+    assert not cc.tja_cleanup_pending
+
+  def test_op_cancel_after_the_first_tap_aborts(self):
+    cc = self._start()
+    self._press_from_off(cc)
+    taps = []
+    while not taps:
+      taps += self._taps(self._run(cc, raw_armed=True))
+    self._run(cc, raw_armed=True, cancel=True)
+    assert not cc.tja_cleanup_pending
+    for _ in range(15):
+      assert not self._taps(self._run(cc, raw_armed=True))
+
+  def test_op_commands_hold_the_first_tap_off(self):
+    cc = self._start()
+    self._press_from_off(cc)
+    for _ in range(15):
+      assert not self._taps(self._run(cc, raw_armed=True, resume=True))
+    assert cc.tja_cleanup_pending
+    # once openpilot stops commanding buttons, the cleanup proceeds
+    taps = []
+    for _ in range(10):
+      taps += self._taps(self._run(cc, raw_armed=True))
+    assert taps
+
+  def test_non_target_platform_never_taps(self):
+    cc = self._start(candidate=CAR.MAZDA_CX5)
+    for _ in range(TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES + 1):
+      self._run(cc, raw_armed=False)
+    self._run(cc, tja=1, raw_armed=False)
+    self._run(cc, tja=1, raw_armed=True)
+    self._run(cc, tja=0, raw_armed=True)
+    for _ in range(20):
+      assert not self._taps(self._run(cc, raw_armed=True))
+    assert not cc.tja_cleanup_pending
+
+  def test_unlatched_hardware_never_taps(self):
+    cc = self._start()
+    self.nanos = 0
+    self.counter = -1
+    for _ in range(TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES + 1):
+      self._run(cc, raw_armed=False, tja_seen=False)
+    # the press itself latches on the car side, so the latch lands with the press
+    self._run(cc, tja=1, raw_armed=False, tja_seen=True)
+    self._run(cc, tja=1, raw_armed=True, tja_seen=True)
+    self._run(cc, tja=0, raw_armed=True, tja_seen=True)
+    for _ in range(20):
+      assert not self._taps(self._run(cc, raw_armed=True, tja_seen=True))
+
+  def test_icbm_is_silent_while_the_tja_button_owns_the_address(self):
+    cc = self._start()
+    icbm_button = structs.IntelligentCruiseButtonManagement.SendButtonState.increaseHold
+    # ICBM speaks when the button bus is free...
+    free_bus = 0
+    for _ in range(12):
+      free_bus += sum(1 for addr, _, _ in self._run(cc, raw_armed=True, icbm_send_button=icbm_button)
+                      if addr == CRZ_BTNS)
+    assert free_bus > 0
+    # ...and stays silent for the whole owned episode: hold, release, and the cleanup taps
+    for _ in range(TJA_CLEANUP_RAW_OFF_CONFIRM_FRAMES + 1):
+      self._run(cc, raw_armed=False, icbm_send_button=icbm_button)
+    self._run(cc, tja=1, raw_armed=False, icbm_send_button=icbm_button)
+    self._run(cc, tja=1, raw_armed=True, icbm_send_button=icbm_button)
+    saw_tap = False
+    for _ in range(30):
+      sends = self._run(cc, raw_armed=True, icbm_send_button=icbm_button)
+      if saw_tap and not cc.tja_cleanup_pending:
+        break  # episode finished; the bus is free again
+      non_tap_buttons = [dat for addr, dat, bus in sends
+                         if addr == CRZ_BTNS and bus == 0 and dat not in self._taps(sends)]
+      assert not non_tap_buttons
+      saw_tap = saw_tap or bool(self._taps(sends))
+    assert saw_tap

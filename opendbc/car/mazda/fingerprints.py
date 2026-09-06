@@ -63,8 +63,6 @@ FW_VERSIONS = {
     ],
   },
   CAR.MAZDA_CX5_KE: {
-    # No EPS entry on purpose: these bodies run 2022 CX-5 EPS swaps, and the swap
-    # firmware belongs to MAZDA_CX5_2022 and STEER_TO_ZERO_EPS_FW, not the chassis
     (Ecu.engine, 0x7e0, None): [
       b'PYAS-188K2-C\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
     ],

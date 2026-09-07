@@ -52,18 +52,21 @@ G46L_FW = sorted(G46L_RADAR_FW)[0] + b'\x00' * (24 - len(sorted(G46L_RADAR_FW)[0
 class TestMazdaEpsSwap:
   """A 2022+ CX-5 EPS swapped into an older Mazda brings the EPS-derived behavior with it.
 
-  Pre-2022 Mazdas are dashcam only because their EPS locks steering out after ~5 s hands-off
-  and below 45 kph. That lockout lives in the EPS, so the swap lifts it. Everything keyed on
-  the radar, camera or vehicle dynamics must stay keyed on the model.
+  The port trusts the platform table for engagement: no Mazda is dashcam-only, and an EPS
+  mismatch only downgrades capabilities. The stock pre-2022 EPS still locks steering out after
+  ~5 s hands-off and below 45 kph, so those cars keep the 45 kph speed floor and the slower
+  actuator delay. Everything keyed on the radar, camera or vehicle dynamics must stay keyed on
+  the model.
   """
 
-  def test_stock_older_mazda_is_dashcam_only(self):
+  def test_stock_older_mazda_keeps_the_speed_floor(self):
+    # engagement is never EPS-gated, but the stock pre-2022 EPS keeps the 45 kph floor
     CP = car_params(CAR.MAZDA_CX5, car_fw=eps_fw(STOCK_CX5_EPS_FW))
-    assert CP.dashcamOnly
+    assert not CP.dashcamOnly
     assert CP.minSteerSpeed == pytest.approx(MIN_STEER_SPEED_STOCK_EPS, abs=5e-8)
     assert CP.steerActuatorDelay == pytest.approx(0.1, abs=5e-8)
 
-  def test_swapped_eps_lifts_dashcam_and_the_speed_floor(self):
+  def test_swapped_eps_lifts_the_speed_floor(self):
     CP = car_params(CAR.MAZDA_CX5, car_fw=eps_fw(SWAPPED_EPS_FW))
     assert not CP.dashcamOnly
     assert CP.minSteerSpeed == 0
@@ -118,11 +121,11 @@ class TestMazdaEpsSwap:
 
   def test_ke_runs_vision_only_under_a_swapped_eps(self):
     # the first-generation radar speaks no track dialect, so the platform promises no
-    # radar bus: the lead comes from the model and no teardown is offered, while the
-    # EPS swap still lifts the steering lockouts
+    # radar bus: the lead comes from the model and no teardown is offered. The stock
+    # EPS keeps the 45 kph floor; the swap lifts it without touching engagement
     stock = car_params(CAR.MAZDA_CX5_KE)
     assert stock.radarUnavailable
-    assert stock.dashcamOnly
+    assert stock.minSteerSpeed == pytest.approx(MIN_STEER_SPEED_STOCK_EPS, abs=5e-8)
 
     swapped = car_params(CAR.MAZDA_CX5_KE, car_fw=eps_fw(SWAPPED_EPS_FW))
     assert swapped.radarUnavailable

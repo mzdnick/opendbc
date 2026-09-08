@@ -50,6 +50,16 @@ static bool mazda_legacy_fw_eps = false;
 static uint32_t mazda_engage_btn_frames = 0U;
 static uint32_t mazda_cancel_context_frames = 0U;
 
+// The TJA press arms MRCC on the shared bus. The controller undoes that by replaying the
+// car's own physical main-press frame, so latch that frame here and let only it through:
+// the replay can never carry bytes the driver's button did not produce. A physical press
+// re-arms the budget; the replay alone may not.
+#define MAZDA_MASTER_REPLAY_BUDGET 4U
+static uint8_t mazda_master_press_frame[8] = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
+static bool mazda_master_press_latched = false;
+static uint32_t mazda_master_replays = 0U;
+static bool mazda_acc_armed = false;
+
 // Mirror carstate's radar-ownership guard so panda and MADS arm on the same edge. Start the
 // 50 Hz clock from the first synthetic CRZ_INFO because rx never sees the stock copy.
 #define MAZDA_RADAR_SILENT_FRAMES 50U
@@ -135,15 +145,32 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
     if ((msg->addr == MAZDA_CRZ_CTRL) && !mazda_longitudinal) {
       bool cruise_engaged = msg->data[0] & 0x8U;
       pcm_cruise_check(cruise_engaged);
+      mazda_acc_armed = GET_BIT(msg, 17U);
       // With the TJA button owning lateral, MRCC no longer drives the MADS main edge.
       if (!mazda_tja_button) {
         acc_main_on = GET_BIT(msg, 17U);
       }
     }
 
-    if ((msg->addr == MAZDA_CRZ_BTNS) && mazda_tja_button) {
+    if ((msg->addr == MAZDA_CRZ_BTNS) && (GET_LEN(msg) == 8U) && mazda_tja_button) {
       // The physical TJA button is the MADS lateral switch, so lateral no longer follows MRCC.
       mads_button_press = GET_BIT(msg, MAZDA_TJA_BUTTON_BIT) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
+
+      // Latch the car's own MRCC-main press: no command bit set, and either trim's
+      // encoding (MODE_X+MODE_Y, or BIT1 low with its inverse high). Trims differ, the
+      // replay must match whichever this car speaks.
+      bool no_cmd = (msg->data[0] == 0U) && ((msg->data[1] & 0x08U) == 0U) &&
+                    (msg->data[4] == 0U) && (msg->data[5] == 0U) &&
+                    (msg->data[6] == 0U) && (msg->data[7] == 0U);
+      bool main_shaped = GET_BIT(msg, 14U) && GET_BIT(msg, 13U);
+      bool master_shaped = (!GET_BIT(msg, 16U)) && ((msg->data[1] & 0x80U) != 0U);
+      if (no_cmd && (main_shaped || master_shaped)) {
+        for (int i = 0; i < 8; i++) {
+          mazda_master_press_frame[i] = msg->data[i];
+        }
+        mazda_master_press_latched = true;
+        mazda_master_replays = 0U;
+      }
     }
 
     if ((msg->addr == MAZDA_CRZ_BTNS) && mazda_longitudinal) {
@@ -181,6 +208,7 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
         bool cruise_engaged = GET_BIT(msg, 3U);
         bool acc_armed = GET_BIT(msg, 2U) || cruise_engaged;
         bool brake_free = !brake && !brake_pressed_prev;
+        mazda_acc_armed = acc_armed;
 
         // Main mirrors carstate's cruise_available: it follows arming, and a both-low sample is
         // held under braking unless a wheel cancel explains it. Without the cancel path, main
@@ -337,7 +365,24 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   if (main_bus && (msg->addr == MAZDA_CRZ_BTNS)) {
     // Permit resume only while controlling and cancel only while not controlling.
     bool cancel_cmd = (msg->data[0] == 0x1U);
-    if (!controls_allowed && !cancel_cmd) {
+    // The TJA cleanup may replay the car's own latched main press while disengaged: byte-
+    // equal to the physical frame except CTR, cruise reporting armed, and inside the
+    // budget a physical press re-arms. Nothing else the controller could build passes.
+    bool master_replay = mazda_tja_button && mazda_acc_armed && mazda_master_press_latched &&
+                         (GET_LEN(msg) == 8U) && (msg->data[0] == mazda_master_press_frame[0]) &&
+                         (msg->data[1] == mazda_master_press_frame[1]) &&
+                         (msg->data[2] == mazda_master_press_frame[2]) &&
+                         ((msg->data[3] & 0xC3U) == (mazda_master_press_frame[3] & 0xC3U)) &&
+                         (msg->data[4] == 0U) && (msg->data[5] == 0U) &&
+                         (msg->data[6] == 0U) && (msg->data[7] == 0U);
+    if (master_replay) {
+      mazda_master_replays += 1U;
+      if (mazda_master_replays > MAZDA_MASTER_REPLAY_BUDGET) {
+        mazda_master_press_latched = false;
+        master_replay = false;
+      }
+    }
+    if (!controls_allowed && !cancel_cmd && !master_replay) {
       tx = false;
     }
   }
@@ -368,6 +413,9 @@ static safety_config mazda_init(uint16_t param) {
   mazda_radar_mastered = false;
   mazda_mastered_pedals_frames = 0U;
   mazda_radar_was_silenced = false;
+  mazda_master_press_latched = false;
+  mazda_master_replays = 0U;
+  mazda_acc_armed = false;
 
   static const CanMsg MAZDA_TX_MSGS[] = {
     {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},

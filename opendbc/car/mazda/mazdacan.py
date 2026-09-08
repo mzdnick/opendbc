@@ -163,9 +163,12 @@ CAM_LANEINFO_ADDR = 0x440
 # packer mapping: the three-bit field in byte 6, the single bits in byte 7
 STEER_IND_B6 = 0x0E
 STEER_IND_B7 = 0x09
+TJA_MASK_B4 = 0x70          # TJA nibble, DBC values 2/3/4; 2 draws the white assist display
+CRZ_BTNS_CTR_MASK_B3 = 0x3C  # CTR sits in byte 3 bits 5:2; each trim pins the bits around it
 
 
-def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = None):
+def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = None,
+                          tja: int | None = None):
   # byte-for-byte: bits the DBC does not describe must reach the dash as the camera sent
   # them. steer_indicator None relays the camera's own indicator state, True/False light
   # or clear it for openpilot's hold-the-wheel alerts. LANE_LINES always stays the
@@ -180,7 +183,19 @@ def create_laneinfo_relay(cam_raw: int | None, steer_indicator: bool | None = No
     else:
       dat[6] &= 0xFF ^ STEER_IND_B6
       dat[7] &= 0xFF ^ STEER_IND_B7
+  if tja is not None:
+    dat[4] = (dat[4] & (0xFF ^ TJA_MASK_B4)) | ((tja & 0x7) << 4)
   return CanData(CAM_LANEINFO_ADDR, bytes(dat), 0)
+
+
+def create_master_replay(latched: int, counter: int):
+  # Replay the car's own MRCC-main/master press with the counter advanced, so the body
+  # undoes a TJA-caused cruise arm exactly as the physical button would. Trims encode the
+  # button differently (MODE_X/Y vs BIT1 active-low), so the bytes must come from the
+  # car itself; only the CTR nibble is ours
+  dat = bytearray(latched.to_bytes(8, "big"))
+  dat[3] = (dat[3] & (0xFF ^ CRZ_BTNS_CTR_MASK_B3)) | ((counter & 0xF) << 2)
+  return CanData(0x09d, bytes(dat), 0)
 
 
 def create_button_cmd(packer, CP, counter, button):

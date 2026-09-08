@@ -849,5 +849,66 @@ class TestMazdaTjaMads(unittest.TestCase):
     self.assertTrue(self.safety.get_acc_main_on())
 
 
+class TestMazdaMasterReplay(unittest.TestCase):
+  """The TJA cleanup replays the car's own latched MRCC-main press, and nothing else.
+
+  A TJA press arms MRCC on the shared bus; the controller undoes that arm by replaying the
+  physical main-press frame with the counter advanced. The panda latches that frame from
+  the bus, so the replay can never carry bytes the driver's button did not produce.
+  """
+
+  def setUp(self):
+    self.packer = CANPackerSafety("mazda_2017")
+    self.safety = libsafety_py.libsafety
+    self._init(tja_button=True)
+
+  def _init(self, tja_button):
+    self.safety.set_current_safety_param_sp(MazdaSafetyFlagsSP.TJA_BUTTON if tja_button else 0)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, 0)
+    self.safety.init_tests()
+
+  def tearDown(self):
+    self.safety.set_current_safety_param_sp(0)
+
+  def _main_press(self, ctr=0, mode_x=1, mode_y=1, **extra):
+    values = {"MODE_X": mode_x, "MODE_Y": mode_y, "CTR": ctr, **extra}
+    return self.packer.make_can_msg_safety("CRZ_BTNS", 0, values)
+
+  def _crz_ctrl(self, main_on):
+    return self.packer.make_can_msg_safety("CRZ_CTRL", 0, {"CRZ_AVAILABLE": main_on})
+
+  def test_replay_needs_latch_arm_and_declaration(self):
+    self.safety.safety_rx_hook(self._crz_ctrl(True))
+    self.assertFalse(self.safety.safety_tx_hook(self._main_press(ctr=1)))  # nothing latched
+
+    self.safety.safety_rx_hook(self._main_press())
+    self.assertTrue(self.safety.safety_tx_hook(self._main_press(ctr=1)))
+
+    self._init(tja_button=True)  # latched but cruise not armed
+    self.safety.safety_rx_hook(self._main_press())
+    self.assertFalse(self.safety.safety_tx_hook(self._main_press(ctr=1)))
+
+    self._init(tja_button=False)  # undeclared car: never
+    self.safety.safety_rx_hook(self._crz_ctrl(True))
+    self.safety.safety_rx_hook(self._main_press())
+    self.assertFalse(self.safety.safety_tx_hook(self._main_press(ctr=1)))
+
+  def test_replay_rejects_foreign_bytes(self):
+    self.safety.safety_rx_hook(self._crz_ctrl(True))
+    self.safety.safety_rx_hook(self._main_press())
+    self.assertFalse(self.safety.safety_tx_hook(self._main_press(ctr=1, mode_x=0)))
+    self.assertFalse(self.safety.safety_tx_hook(self._main_press(ctr=1, RES=1)))
+
+  def test_replay_budget_is_rearmed_only_by_a_physical_press(self):
+    self.safety.safety_rx_hook(self._crz_ctrl(True))
+    self.safety.safety_rx_hook(self._main_press())
+    for ctr in range(1, 5):
+      self.assertTrue(self.safety.safety_tx_hook(self._main_press(ctr=ctr)))
+    self.assertFalse(self.safety.safety_tx_hook(self._main_press(ctr=5)))
+
+    self.safety.safety_rx_hook(self._main_press(ctr=6))  # the driver presses again
+    self.assertTrue(self.safety.safety_tx_hook(self._main_press(ctr=7)))
+
+
 if __name__ == "__main__":
   unittest.main()

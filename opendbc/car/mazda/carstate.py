@@ -46,6 +46,8 @@ class CarState(CarStateBase, CarStateExt):
     self.resume_button = 0
     self.main_button = 0
     self.tja_button = 0
+    self.master_press_frame = 0
+    self.mrcc_armed_raw = False
 
     self.cruise_available = False
     self.cruise_enabled = False
@@ -76,6 +78,11 @@ class CarState(CarStateBase, CarStateExt):
   def stock_radar_gone(self) -> bool:
     # This silence duration establishes radar ownership rather than a dropped frame.
     return self.stock_radar_silent_frames >= STOCK_RADAR_GUARD_FRAMES
+
+  @property
+  def cam_laneinfo_live(self) -> bool:
+    # The HUD relay's raw payload is only as fresh as the camera frame it came from
+    return self.cam_laneinfo_seen and self.cam_laneinfo_silent_frames < CAM_LANEINFO_FRESH_FRAMES
 
   def update_steer_undelivered(self, v_ego_raw: float, lkas_request: float, lkas_blocked: bool, lkas_track_state: bool) -> None:
     # Latch sustained zero LKAS_EFFECTIVE for a real request before the camera faults. Clear
@@ -195,6 +202,10 @@ class CarState(CarStateBase, CarStateExt):
     ret.stockFcw = (self.cam_empty_seen and cam_empty["STATUS"] != 0x7F) or \
                    ped["PED_WARNING"] == 1 or ped["BRAKE_WARNING"] == 1
 
+    # Unfiltered cruise-armed state: gates that must fail closed read this, not the
+    # debounced cruise_available
+    self.mrcc_armed_raw = cp.vl["PEDALS"]["ACC_OFF"] == 1 or cp.vl["PEDALS"]["ACC_ACTIVE"] == 1
+
     if self.CP.openpilotLongitudinalControl:
       # After radar teardown, derive cruise state from PEDALS. Hold the previous state through
       # brake-only samples where both cruise bits are transiently low.
@@ -304,6 +315,18 @@ class CarState(CarStateBase, CarStateExt):
     self.main_button = int(cp.vl["CRZ_BTNS"]["MODE_X"] == 1 and cp.vl["CRZ_BTNS"]["MODE_Y"] == 1)
     # Only a car declared to have the physical TJA button reports it as the MADS switch.
     self.tja_button = int(cp.vl["CRZ_BTNS"]["TJA_BUTTON"] == 1) if self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON else 0
+    # The MRCC-main press this car actually produces. Trims encode it differently (this
+    # platform's MODE_X/Y pair, the TJA trims' BIT1 active-low), so latch the raw frame and
+    # let the controller replay those exact bytes when a TJA press arms cruise as a side
+    # effect. No command bit may ride it, or a replay would actuate it.
+    btns_hi = int(cp.vl["CRZ_BTNS"]["FRAME_RAW_HI"])
+    btns_lo = int(cp.vl["CRZ_BTNS"]["FRAME_RAW_LO"])
+    btns = btns_hi.to_bytes(4, "big") + btns_lo.to_bytes(4, "big")
+    cmd_bits = (btns[0] != 0) or (btns[1] & 0x08) or (btns[4] | btns[5] | btns[6] | btns[7])
+    main_shaped = self.main_button == 1
+    master_shaped = cp.vl["CRZ_BTNS"]["BIT1"] == 0 and (btns[1] & 0x80) != 0
+    if not cmd_bits and (main_shaped or master_shaped):
+      self.master_press_frame = (btns_hi << 32) | btns_lo
 
     ret.buttonEvents = [
       *create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise}),

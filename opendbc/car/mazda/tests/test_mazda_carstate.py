@@ -130,6 +130,32 @@ class TestLaneinfoRawCapture:
     assert CI.CS.cam_laneinfo_ts == second
 
 
+class TestMasterPressLatch:
+  """The raw MRCC-main press the TJA cleanup replays, latched from the physical bus.
+
+  Trims encode the button differently, so both known shapes latch; idle frames and
+  anything carrying a command bit must not.
+  """
+
+  def test_latches_both_trim_encodings(self):
+    CI = car_interface()
+    CI.update([(t_ns(0), [])])   # the first cycle primes the parsers
+    for i, payload in enumerate((bytes.fromhex("0061ff2800000000"),    # this platform's MODE_X/Y press
+                                 bytes.fromhex("0081fec400000000")), 1):  # the TJA trim's BIT1 active-low press
+      CI.update([(t_ns(i), [(0x09d, payload, 0)])])
+      assert CI.CS.master_press_frame == int.from_bytes(payload, "big")
+
+  def test_idle_and_command_frames_do_not_latch(self):
+    CI = car_interface()
+    CI.update([(t_ns(0), [])])   # the first cycle primes the parsers
+    CI.update([(t_ns(1), [(0x09d, bytes.fromhex("0081fec400000000"), 0)])])
+    latched = CI.CS.master_press_frame
+    for i, payload in enumerate((bytes.fromhex("0001ffcc00000000"),    # idle
+                                 bytes.fromhex("0101fd2c00000000")), 2):  # a cancel press carries a command bit
+      CI.update([(t_ns(i), [(0x09d, payload, 0)])])
+      assert CI.CS.master_press_frame == latched
+
+
 class TestStockFcw:
   """0x21d (CAM_EMPTY) idles at STATUS 0x7f and leaves it only while the camera actively
   shows its SCBS collision display (route 0000004d t+213). The payloads are the captured

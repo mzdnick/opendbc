@@ -11,6 +11,7 @@ import pytest
 
 from opendbc.car.mazda.longitudinal import RELEASE_DEBOUNCE_FRAMES
 from opendbc.car.mazda.tests.conftest import CRZ_BTNS, LongCtrlState, addrs, car_control, step, step_long
+from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 
 class TestResumeButton:
@@ -77,6 +78,14 @@ class TestCancelCarveOut:
     for _ in range(3):
       sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
       assert CRZ_BTNS not in sent, "CANCELed a cruise openpilot never joined"
+
+  def test_the_never_joined_carve_out_survives_a_declared_tja_button(self, stock_cc, stock_cs):
+    # the latch keys on the cruise engagement, not the main edge: a declared TJA button
+    # changes who owns lateral, not whose cruise a SET starts
+    stock_cc.CP_SP.flags |= MazdaFlagsSP.TJA_BUTTON
+    for _ in range(3):
+      sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+      assert CRZ_BTNS not in sent
 
   def test_stock_longitudinal_joined_cruise_still_canceled(self, stock_cc, stock_cs):
     # once openpilot has been enabled on the engagement, a later disengage cancels as before

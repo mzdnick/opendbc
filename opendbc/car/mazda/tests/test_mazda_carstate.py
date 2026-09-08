@@ -367,8 +367,8 @@ class TestLkaButtonToggle:
   (0 = LKAS disabled, 1-4 = lane state with LKAS on), so a confirmed 0 <-> nonzero edge is
   the button press (route 9ff65375--165359698d: every press drove LANE_LINES to 0 and
   back). Each edge emits one ButtonType.lkas press for the mads lateral toggle, the same
-  event the TJA button produces on TJA cars and Honda, Hyundai, Ford, Chrysler and Toyota
-  produce on theirs."""
+  event the Honda, Hyundai, Ford, Chrysler and Toyota buttons produce on theirs. A declared
+  TJA button owns lateral alone, so the LKA state is not a toggle on those cars."""
 
   ON = 2   # two lane lines: LKAS on
   OFF = 0  # LKAS disabled by the dash button
@@ -428,6 +428,15 @@ class TestLkaButtonToggle:
     assert self._presses(ret) == 0
     ret, _ = self._feed_laneinfo(CI, self.OFF, count=2, i0=n + 302)
     assert self._presses(ret) == 1
+
+  def test_a_declared_tja_button_owns_the_toggle(self):
+    CI = car_interface(alpha_long=False)
+    CI.CP_SP.flags |= MazdaFlagsSP.TJA_BUTTON
+    n = self._armed(CI)
+    ret, _ = self._feed_laneinfo(CI, self.OFF, count=2, i0=n)
+    assert self._presses(ret) == 0
+    ret, _ = self._feed_laneinfo(CI, self.ON, count=2, i0=n + 2)
+    assert self._presses(ret) == 0
 
 
 class TestCruiseStandstill:

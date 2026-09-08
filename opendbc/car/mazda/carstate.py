@@ -191,21 +191,23 @@ class CarState(CarStateBase, CarStateExt):
     # Evaluated only when a frame arrived, debounced over two consecutive frames (2 Hz, so
     # ~1 s; presses persist, single-frame glitches do not), and the first confirmed value
     # arms the baseline without firing. Changes among nonzero values are lane state, not
-    # presses. Each edge emits ButtonType.lkas, the same lateral toggle the TJA button
-    # feeds on TJA cars and the Honda, Hyundai, Ford, Chrysler and Toyota buttons feed on
-    # theirs; mads gates the enable side on cruise availability.
+    # presses. Each edge emits ButtonType.lkas, the same lateral toggle the Honda, Hyundai,
+    # Ford, Chrysler and Toyota buttons feed on theirs; mads gates the enable side on cruise
+    # availability. A declared TJA button owns lateral alone, so the LKA state is not a
+    # toggle on those cars.
     self.lkas_button_press = False
-    laneinfo_vals = cp_cam.vl_all["CAM_LANEINFO"]["LANE_LINES"]
-    if len(laneinfo_vals) > 0:
-      lkas_on = int(laneinfo_vals[-1]) != 0
-      if lkas_on != self.lkas_on_candidate:
-        self.lkas_on_candidate = lkas_on
-      elif not self.lane_lines_armed:
-        self.lane_lines_armed = True
-        self.lkas_on_stable = lkas_on
-      elif lkas_on != self.lkas_on_stable:
-        self.lkas_on_stable = lkas_on
-        self.lkas_button_press = True
+    if not (self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON):
+      laneinfo_vals = cp_cam.vl_all["CAM_LANEINFO"]["LANE_LINES"]
+      if len(laneinfo_vals) > 0:
+        lkas_on = int(laneinfo_vals[-1]) != 0
+        if lkas_on != self.lkas_on_candidate:
+          self.lkas_on_candidate = lkas_on
+        elif not self.lane_lines_armed:
+          self.lane_lines_armed = True
+          self.lkas_on_stable = lkas_on
+        elif lkas_on != self.lkas_on_stable:
+          self.lkas_on_stable = lkas_on
+          self.lkas_button_press = True
 
     # 0x21d leaves its idle 0x7f status only while the collision warning is displayed.
     if not self.cam_empty_seen:

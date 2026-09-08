@@ -110,6 +110,26 @@ class TestFscSettleGate:
     assert not CI.CS.fsc_settled
 
 
+class TestLaneinfoRawCapture:
+  """The exact camera frame the HUD relay forwards, in bytes the DBC does not describe."""
+
+  def test_raw_carries_undefined_bits(self):
+    # bytes 2 and 5 carry no DBC signal at all, but the dash reads bits there
+    payload = bytes([0x42, 0x41, 0xAB, 0x00, 0x00, 0xCD, 0x71, 0x3C])
+    CI = car_interface()
+    for i in range(2):
+      CI.update([(t_ns(i), [(CAM_LANEINFO, payload, 2)])])
+    assert CI.CS.cam_laneinfo_raw == int.from_bytes(payload, "big")
+
+  def test_timestamp_tracks_new_frames(self):
+    CI = car_interface()
+    first, second = t_ns(0), t_ns(10)
+    CI.update([(first, [(CAM_LANEINFO, SETTLED, 2)])])
+    assert CI.CS.cam_laneinfo_ts == first
+    CI.update([(second, [(CAM_LANEINFO, SETTLED, 2)])])
+    assert CI.CS.cam_laneinfo_ts == second
+
+
 class TestStockFcw:
   """0x21d (CAM_EMPTY) idles at STATUS 0x7f and leaves it only while the camera actively
   shows its SCBS collision display (route 0000004d t+213). The payloads are the captured

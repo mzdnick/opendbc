@@ -19,6 +19,9 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 # Send synthetic radar frames to both consumers; panda does not forward locally generated frames.
 LONG_BUSES = (0, 2)
 
+# a quiet camera longer than this drops the HUD relay to the 2 Hz hold on the last frame
+LANEINFO_STALE_FRAMES = int(1.0 / DT_CTRL)
+
 
 class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterface):
   def __init__(self, dbc_names, CP, CP_SP):
@@ -45,6 +48,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.accel_last = 0.
     self.release_ramp = None
     self.breakaway_frames = 0
+    self.last_laneinfo_ts = None
+    self.laneinfo_age_frames = 0
 
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
@@ -117,13 +122,23 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     if self.CP.openpilotLongitudinalControl:
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
 
-    # send HUD alerts
-    if self.frame % 50 == 0:
-      ldw = CC.hudControl.visualAlert == VisualAlert.ldw
-      steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
-      # TODO: find a way to silence audible warnings so we can add more hud alerts
-      steer_required = steer_required and CS.lkas_allowed_speed
-      can_sends.append(mazdacan.create_alert_command(self.packer, CS.cam_laneinfo, ldw, steer_required))
+    # relay the camera's HUD frame the moment a new one lands, at the camera's own cadence;
+    # once the camera has been quiet past the stale window, hold the last frame at 2 Hz
+    cam_ts = CS.cam_laneinfo_ts
+    new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
+    if new_frame or (self.laneinfo_age_frames >= LANEINFO_STALE_FRAMES and self.laneinfo_age_frames % 50 == 0):
+      # while openpilot steers it drives the steering-assist indicator (the orange wheel
+      # stock lights while the EPS corrects) as its alert channel, and blanks the lines
+      steer_indicator = None
+      if CC.latActive:
+        steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
+        # TODO: find a way to silence audible warnings so we can add more hud alerts
+        steer_indicator = steer_required and CS.lkas_allowed_speed
+      can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw if cam_ts > 0 else None,
+                                                      steer_indicator,
+                                                      steer_indicator is not None and not steer_indicator))
+      self.last_laneinfo_ts = cam_ts
+    self.laneinfo_age_frames = 0 if new_frame else self.laneinfo_age_frames + 1
 
     # send steering command
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,

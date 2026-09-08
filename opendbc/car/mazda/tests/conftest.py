@@ -177,6 +177,9 @@ def mazda_car_state(CP, CP_SP, **kwargs) -> CarState:
   parsers = CarState.get_can_parsers(CP, CP_SP)
   cs.cam_lkas = parsers[Bus.cam].vl["CAM_LKAS"]
   cs.cam_laneinfo = parsers[Bus.cam].vl["CAM_LANEINFO"]
+  # a fresh parser has seen no camera frame: raw empty, timestamp zero
+  cs.cam_laneinfo_raw = 0
+  cs.cam_laneinfo_ts = 0
   return set_car_state(cs, **kwargs)
 
 

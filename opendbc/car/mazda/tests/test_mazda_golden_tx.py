@@ -122,6 +122,12 @@ SCENARIO = [
 ]
 
 
+# the camera speaks CAM_LANEINFO at 2 Hz. This engaged payload (route f0ffadc70bb6477d
+# seg 2, a TJA car) carries TJA state and DBC-less bits the relay must forward byte-exact
+CAMERA_LANEINFO = int.from_bytes(bytes.fromhex("4202000640001040"), "big")
+CAMERA_PERIOD = 50   # control frames per camera frame
+
+
 def run_scenario():
   """Drive a fresh alpha-long controller through SCENARIO. Yields one record per control frame."""
   cc = car_controller(alpha_long=True)
@@ -134,6 +140,10 @@ def run_scenario():
         kwargs.update(per_frame(i, cc))
       cc_kw, cc_sp_kw, cs_kw = split_inputs(kwargs)
       set_car_state(cs, **cs_kw)
+      if frame % CAMERA_PERIOD == 0:
+        # a fresh camera frame landed this cycle
+        cs.cam_laneinfo_ts = int((frame + 1) * DT_CTRL * 1e9)
+        cs.cam_laneinfo_raw = CAMERA_LANEINFO
       actuators, sends = cc.update(car_control(**cc_kw), car_control_sp(**cc_sp_kw), cs, int(frame * DT_CTRL * 1e9))
       yield {
         "frame": frame,

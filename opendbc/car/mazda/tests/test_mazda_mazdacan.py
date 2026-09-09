@@ -35,14 +35,16 @@ def test_laneinfo_relay_is_byte_exact():
   assert out["TJA"] == 4 and out["TJA_TRANSITION"] == 1
 
 
-def test_laneinfo_relay_overlays_only_the_indicator_and_lines():
+def test_laneinfo_relay_overlays_only_the_indicator():
   # the steering-assist indicator bits are openpilot's alert channel while it steers;
-  # every other bit stays the camera's. steer_indicator=False blanks the lane lines too
+  # every other bit stays the camera's. LANE_LINES included: the dash cross-checks it
+  # against the camera's tracking traffic, and blanking it while the camera tracks
+  # faults the FSC (device-falsified 2026-09-08)
   cam_raw = int.from_bytes(bytes.fromhex("4202000640001040"), "big")
   lit = mazdacan.create_laneinfo_relay(cam_raw, steer_indicator=True)[1]
   assert lit.hex() == "4202000640001e49"
-  quiet = mazdacan.create_laneinfo_relay(cam_raw, steer_indicator=False, suppress_lines=True)[1]
-  assert quiet.hex() == "4200000640001040"
+  quiet = mazdacan.create_laneinfo_relay(cam_raw, steer_indicator=False)[1]
+  assert quiet.hex() == "4202000640001040"
 
 
 @pytest.mark.parametrize("counter", range(16))

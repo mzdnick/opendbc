@@ -123,7 +123,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
 
     # relay the camera's HUD frame the moment a new one lands, at the camera's own cadence;
-    # once the camera has been quiet past the stale window, hold the last frame at 2 Hz
+    # once the camera has been quiet past the stale window, hold the last frame at 2 Hz.
+    # Only the steering-assist indicator is ours; every other field stays the camera's
     cam_ts = CS.cam_laneinfo_ts
     new_frame = cam_ts > 0 and cam_ts != self.last_laneinfo_ts
     if new_frame or (self.laneinfo_age_frames >= LANEINFO_STALE_FRAMES and self.laneinfo_age_frames % 50 == 0):
@@ -135,8 +136,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         # TODO: find a way to silence audible warnings so we can add more hud alerts
         steer_indicator = steer_required and CS.lkas_allowed_speed
       can_sends.append(mazdacan.create_laneinfo_relay(CS.cam_laneinfo_raw if cam_ts > 0 else None,
-                                                      steer_indicator,
-                                                      steer_indicator is not None and not steer_indicator))
+                                                      steer_indicator))
       self.last_laneinfo_ts = cam_ts
     self.laneinfo_age_frames = 0 if new_frame else self.laneinfo_age_frames + 1
 

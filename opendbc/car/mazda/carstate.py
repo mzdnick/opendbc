@@ -379,7 +379,12 @@ class CarState(CarStateBase, CarStateExt):
 
   @staticmethod
   def get_can_parsers(CP, CP_SP):
-    pt_messages = []
+    # Register the cylinder-status message up front: a lazy read in CarStateExt would
+    # put 0x167 on the canValid path, and a variant that never broadcasts it would sit
+    # on a permanent CAN error. Do not require liveness for it.
+    pt_messages = [
+      ("MORE_GAS", float("nan")),
+    ]
     if CP.openpilotLongitudinalControl:
       # Do not require liveness for frames intentionally absent after radar teardown.
       pt_messages.append(("CRZ_INFO", float("nan")))

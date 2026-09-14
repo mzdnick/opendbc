@@ -57,6 +57,8 @@ class CarState(CarStateBase, CarStateExt):
     # stock_tja; consumed here into a stockLkas pulse.
     self.stock_cts_stuck = False
     self.stock_cts_alert_frames = 0
+    # Not parsed from the bus: the controller's steer-authority watchdog sets this.
+    self.steer_no_authority = False
 
     self.distance_button = 0
     self.accel_button = 0
@@ -305,9 +307,7 @@ class CarState(CarStateBase, CarStateExt):
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1 and not self.CP.openpilotLongitudinalControl
     ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
 
-    # Stock LKAS must be active.
-    # TODO: is this needed?
-    ret.invalidLkasSetting = cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
+    ret.invalidLkasSetting = self.steer_no_authority
 
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:

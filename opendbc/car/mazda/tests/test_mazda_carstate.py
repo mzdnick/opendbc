@@ -734,3 +734,20 @@ class TestFirstEngageHold:
     kw.update(release)
     rig.step(100, 0, kw.pop('blocked'), **kw)
     assert not rig.CS.steer_first_engage_hold
+
+
+def test_the_watchdog_becomes_an_invalid_lkas_setting():
+  CI, pk = car_interface(alpha_long=False), packer()
+  lanes = pk.make_can_msg("CAM_LANEINFO", 2, {"LANE_LINES": 3})
+  assert not feed(CI, 0, lanes)[0].invalidLkasSetting
+  CI.CS.steer_no_authority = True
+  assert feed(CI, 1, lanes)[0].invalidLkasSetting
+  CI.CS.steer_no_authority = False
+  assert not feed(CI, 2, lanes)[0].invalidLkasSetting
+
+
+def test_lane_lines_zero_alone_is_not_an_invalid_lkas_setting():
+  CI, pk = car_interface(alpha_long=False), packer()
+  for i in (0, 1):
+    lanes = pk.make_can_msg("CAM_LANEINFO", 2, {"LANE_LINES": 0})
+    assert not feed(CI, i, lanes)[0].invalidLkasSetting

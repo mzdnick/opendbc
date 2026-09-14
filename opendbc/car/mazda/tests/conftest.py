@@ -137,7 +137,7 @@ def car_control_sp(handback=False, lead_d_rel=12.0, lead_v_rel=0.0, send_button=
 def set_car_state(cs: CarState, out=None, *, brake_hold=False, stock_radar_alive=False, stock_radar_gone=None,
                   fsc_settled=True, radar_was_silenced=False, radar_session_refused=False, radar_session_response=0,
                   radar_bus_healthy=True, steer_undelivered=False,
-                  lkas_blocked=False, lkas_effective=0, steer_first_engage_hold=False, lkas_allowed_speed=True, lkas_rejected=0,
+                  lkas_blocked=False, lkas_effective=0, lkas_delivered=False, steer_first_engage_hold=False, lkas_allowed_speed=True, lkas_rejected=0,
                   lkas_fault=False, crz_btns_counter=0, stock_tja=0,
                   cancel_button=0, accel_button=0, decel_button=0, **out_kwargs) -> CarState:
   """Put the controller-facing state of a real CarState where a test wants it.
@@ -168,6 +168,7 @@ def set_car_state(cs: CarState, out=None, *, brake_hold=False, stock_radar_alive
   cs.steer_undelivered = steer_undelivered
   cs.lkas_blocked = lkas_blocked
   cs.lkas_effective = lkas_effective
+  cs.lkas_delivered = lkas_delivered
   cs.steer_first_engage_hold = steer_first_engage_hold
   cs.lkas_allowed_speed = lkas_allowed_speed
   cs.lkas_rejected = lkas_rejected

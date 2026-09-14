@@ -52,6 +52,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.tja_press_count = 0
     self.tja_press_frame: int | None = None
     self.tja_episode_alerted = False
+    self.no_authority_frames = 0
 
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
@@ -121,6 +122,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         can_sends.append(mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter, Buttons.RESUME))
 
     self.apply_torque_last = apply_torque
+
+    self.update_steer_authority(CC, CS, apply_torque)
 
     if self.CP.openpilotLongitudinalControl:
       can_sends.extend(self.update_longitudinal(CC, CC_SP, CS))
@@ -193,6 +196,19 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         CS.stock_cts_stuck = True
         self.tja_episode_alerted = True
     return can_sends
+
+  def update_steer_authority(self, CC, CS, apply_torque):
+    # The EPS echoes the request but applies none when the car's lane-keep assist is off in the
+    # vehicle settings, with no block or fault to say so. Written onto CS rather than parsed
+    # there: card runs carstate before the controller, so it publishes one frame late.
+    if not self.steer_to_zero:
+      return
+    asking = CC.latActive and abs(apply_torque) > self.params.STEER_UNDELIVERED_MIN
+    if CS.lkas_delivered or not asking or CS.lkas_blocked or CS.lkas_fault:
+      self.no_authority_frames = 0
+    else:
+      self.no_authority_frames += 1
+    CS.steer_no_authority = self.no_authority_frames >= self.params.STEER_NO_AUTHORITY_FRAMES
 
   def resume_requested(self, CC) -> bool:
     """The resume button belongs to the stock-longitudinal path alone. Under openpilot longitudinal

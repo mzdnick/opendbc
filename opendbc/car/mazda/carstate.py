@@ -57,8 +57,6 @@ class CarState(CarStateBase, CarStateExt):
     # stock_tja; consumed here into a stockLkas pulse.
     self.stock_cts_stuck = False
     self.stock_cts_alert_frames = 0
-    # Not parsed from the bus: the controller's steer-authority watchdog sets this.
-    self.steer_no_authority = False
 
     self.distance_button = 0
     self.accel_button = 0
@@ -85,6 +83,7 @@ class CarState(CarStateBase, CarStateExt):
     self.cam_laneinfo_seen = False
     self.cam_laneinfo_silent_frames = 0
     self.cam_empty_seen = False
+    self.cam_settings_seen = False
     self.radar_session_refused = False
     self.radar_session_response = 0
     self.fsc_settled_frames = 0
@@ -307,7 +306,12 @@ class CarState(CarStateBase, CarStateExt):
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1 and not self.CP.openpilotLongitudinalControl
     ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
 
-    ret.invalidLkasSetting = self.steer_no_authority
+    # Lane keep switched off in the vehicle settings clears the intervention bits. An unsent
+    # CAM_SETTINGS decodes as zeros, so latch its arrival once and read the values the parser holds
+    if not self.cam_settings_seen:
+      self.cam_settings_seen = len(cp_cam.vl_all["CAM_SETTINGS"]["LKAS_INERVENTION_ON1"]) > 0
+    cam_settings = cp_cam.vl["CAM_SETTINGS"]
+    ret.invalidLkasSetting = self.cam_settings_seen and not (cam_settings["LKAS_INERVENTION_ON1"] and cam_settings["ILKAS_NTERVENTION_ON2"])
 
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:
@@ -387,6 +391,7 @@ class CarState(CarStateBase, CarStateExt):
     cam_messages = [
       # Read these optional camera messages without making them part of canValid.
       ("CAM_LANEINFO", float("nan")),
+      ("CAM_SETTINGS", float("nan")),
       ("CAM_TRAFFIC_SIGNS", float("nan")),
       ("CAM_EMPTY", float("nan")),
       ("CAM_PEDESTRIAN", float("nan")),

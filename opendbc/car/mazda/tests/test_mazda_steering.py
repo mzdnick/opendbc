@@ -15,8 +15,7 @@ import pytest
 
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.mazda.tests.conftest import (LongCtrlState, car_control, car_controller, car_params, controller_params,
-                                              mazda_car_state, step)
+from opendbc.car.mazda.tests.conftest import LongCtrlState, car_controller, car_params, controller_params, mazda_car_state, step
 from opendbc.car.mazda.values import CAR, CarControllerParams
 
 Ecu = structs.CarParams.Ecu
@@ -154,9 +153,8 @@ class TestCarControllerParams:
     for attr in ('STEER_MAX', 'STEER_MAX_LOOKUP', 'EPS_CEILING_LOOKUP', 'STEER_DELTA_UP', 'STEER_DELTA_DOWN',
                  'STEER_DRIVER_MULTIPLIER', 'STEER_DRIVER_SAMPLES', 'STEER_DRIVER_MARGIN'):
       assert getattr(legacy, attr) == getattr(stz, attr), attr
-    # the latch and the watchdog read LKAS semantics only the steer-to-zero firmware has
+    # the latch reads LKAS_TRACK_STATE semantics only the steer-to-zero firmware has
     assert not hasattr(legacy, 'STEER_UNDELIVERED_FRAMES')
-    assert not hasattr(legacy, 'STEER_NO_AUTHORITY_FRAMES')
 
   def test_undelivered_threshold_clears_normal_operation(self):
     # 20 frames is an order of magnitude clear of both populations: across 96k unblocked
@@ -168,16 +166,6 @@ class TestCarControllerParams:
     # the request has to clear the rate limiter's walk before the count can start, so the
     # minimum must sit above what one STEER_DELTA_UP step delivers
     assert params.STEER_UNDELIVERED_MIN > params.STEER_DELTA_UP
-
-  def test_the_no_authority_window_clears_normal_operation(self):
-    # Unblocked frames only, since the watchdog excludes LKAS_BLOCK: the longest benign run of
-    # LKAS_EFFECTIVE == 0 under a request is 2 frames. tools/mazda_long/analyze_lkas_nondelivery.py
-    params = cx5_2022_params()
-    # two orders of magnitude clear of the benign run, as the latch's margin is
-    assert params.STEER_NO_AUTHORITY_FRAMES > 2 * 50
-    # must outlast the latch and its alert, so a slow-to-deliver EPS is reported there first
-    assert params.STEER_NO_AUTHORITY_FRAMES > params.STEER_UNDELIVERED_FRAMES + params.STEER_UNDELIVERED_ALERT_FRAMES
-    assert not hasattr(params, 'STEER_NO_AUTHORITY_MIN')  # shares the latch's deadband
 
   def test_the_alert_thresholds_sit_between_the_benign_and_faulting_populations(self):
     # The camera latches CAM_LKAS.ERR_BIT_1 on a budget of LKAS requests the EPS never applies
@@ -351,61 +339,3 @@ def test_the_first_engage_hold_is_the_steer_to_zero_eps_only(stock_cc, stock_cs)
   stock_cc.steer_to_zero = False
   actuators, _ = step(stock_cc, stock_cs, steer_first_engage_hold=True, long_active=False, enabled=True, lat_active=True, torque=-1.0, v_ego=0.3)
   assert actuators.torqueOutputCan == -stock_cc.params.STEER_DELTA_UP
-
-
-class TestSteerAuthorityWatchdog:
-  """LKAS_EFFECTIVE stays zero under a sustained request, with no block or fault to say why."""
-
-  LAT = dict(long_active=False, enabled=True, lat_active=True, torque=1.0, v_ego=10.)
-
-  def ramp(self, cc, cs, n, **kw):
-    for _ in range(n):
-      step(cc, cs, **dict(self.LAT, **kw))
-    return cs.steer_no_authority
-
-  def ramp_to_the_deadband(self, cc, cs):
-    n = 0
-    while cc.apply_torque_last <= cc.params.STEER_UNDELIVERED_MIN:
-      step(cc, cs, **self.LAT)
-      n += 1
-    return n
-
-  def test_fires_on_its_own_frame_and_not_one_earlier(self, stock_cc, stock_cs):
-    # the command must clear the EPS deadband before the watchdog counts at all
-    assert self.ramp_to_the_deadband(stock_cc, stock_cs) > 1
-    assert not stock_cs.steer_no_authority
-    # that frame was the first counted one, so the window is one frame short
-    assert not self.ramp(stock_cc, stock_cs, stock_cc.params.STEER_NO_AUTHORITY_FRAMES - 2)
-    assert self.ramp(stock_cc, stock_cs, 1)
-
-  def test_a_command_inside_the_deadband_never_counts(self, stock_cc, stock_cs):
-    # below the deadband the EPS rounds to zero, so a zero delivered count says nothing
-    torque = stock_cc.params.STEER_UNDELIVERED_MIN / stock_cc.params.STEER_MAX * 0.9
-    assert not self.ramp(stock_cc, stock_cs, stock_cc.params.STEER_NO_AUTHORITY_FRAMES * 2, torque=torque)
-    assert 0 < stock_cc.apply_torque_last <= stock_cc.params.STEER_UNDELIVERED_MIN
-
-  def test_delivery_clears_it_for_the_cycle(self, stock_cc, stock_cs):
-    assert self.ramp(stock_cc, stock_cs, stock_cc.params.STEER_NO_AUTHORITY_FRAMES + 100)
-    assert not self.ramp(stock_cc, stock_cs, 1, lkas_delivered=True)
-    assert not self.ramp(stock_cc, stock_cs, stock_cc.params.STEER_NO_AUTHORITY_FRAMES + 100, lkas_delivered=True)
-
-  def test_a_block_or_a_fault_explains_itself(self, stock_cc, stock_cs):
-    # an EPS that says why it is not delivering is the latch's business, not this
-    n = stock_cc.params.STEER_NO_AUTHORITY_FRAMES + 100
-    assert not self.ramp(stock_cc, stock_cs, n, lkas_blocked=True)
-    assert not self.ramp(stock_cc, stock_cs, n, lkas_fault=True)
-
-  def test_the_latactive_term_carries_its_own_weight(self, stock_cc, stock_cs):
-    # step() pairs latActive false with a zero command, so drive the watchdog directly with a
-    # torque the rate limiter would never pair with lateral off
-    torque = stock_cc.params.STEER_MAX
-    for _ in range(stock_cc.params.STEER_NO_AUTHORITY_FRAMES + 100):
-      stock_cc.update_steer_authority(car_control(enabled=True, lat_active=False), stock_cs, torque)
-    assert not stock_cs.steer_no_authority
-    for _ in range(stock_cc.params.STEER_NO_AUTHORITY_FRAMES):
-      stock_cc.update_steer_authority(car_control(enabled=True, lat_active=True), stock_cs, torque)
-    assert stock_cs.steer_no_authority
-
-  def test_the_legacy_eps_gets_no_watchdog(self):
-    cc = car_controller(alpha_long=False, candidate=CAR.MAZDA_CX5)
-    assert not self.ramp(cc, mazda_car_state(cc.CP, cc.CP_SP), cx5_2022_params().STEER_NO_AUTHORITY_FRAMES * 2)

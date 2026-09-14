@@ -130,10 +130,6 @@ class CarControllerParams:
         # engagement of the cycle it delivered nothing under standby below it on any start on
         # record, and faulted on 3 of 13 (docs/zoompilot/mazda-lkas-startup-2026-09-09.md).
         self.STEER_UNDELIVERED_ALERT_ORIGIN_SPEED = 1.0  # m/s
-
-        # A sustained request with nothing delivered and no block or fault: the car's
-        # lane-keep assist is switched off in the vehicle settings.
-        self.STEER_NO_AUTHORITY_FRAMES = 200  # 2.0 s at 100 Hz
     else:
       # Upstream's envelope. The interface no longer selects it for any Mazda; the panda keeps
       # it as the no-param default, so flags == 0 must still build.

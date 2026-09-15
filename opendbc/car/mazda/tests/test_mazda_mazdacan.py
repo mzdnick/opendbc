@@ -130,11 +130,30 @@ def test_radar_frames_match_stock():
     (0x362, "fff7fefe1fc78c80"),
     (0x363, "fff7fefe1fc00000"),
     (0x364, "fff7fefe1fc00000"),
-    (0x365, "fff7fe7ffbff3fc0"),
-    (0x366, "fff7fe7ffbff3fc0"),
   ]
   frames = mazdacan.create_radar_frames(0, 0, None)
-  assert [(f.address, f.dat.hex()) for f in frames] == expected
+  # the static frame and the empty 1-4 tracks stay the stock capture; 5/6 open the cycle
+  assert [(f.address, f.dat.hex()) for f in frames[:5]] == expected
+  assert [f.address for f in frames[5:]] == [0x365, 0x366]
+
+
+def test_radar_frames_replay_the_captured_clutter_cycle():
+  # 5/6 walk the capture in order, hold the empty template for the tail, and wrap;
+  # only the counter nibble differs from the captured bytes. The empty tails differ
+  # per slot (stock duty cycle), so each slot wraps on its own cycle length.
+  for addr in mazdacan.RADAR_CLUTTER_ADDRS:
+    n = mazdacan.RADAR_CLUTTER_OCCUPIED + mazdacan.RADAR_CLUTTER_EMPTY[addr]
+    for k in (0, 1, mazdacan.RADAR_CLUTTER_OCCUPIED - 1,
+              mazdacan.RADAR_CLUTTER_OCCUPIED, n - 1, n, n + 25):
+      frames = {f.address: f.dat for f in mazdacan.create_radar_frames(0, k, None)}
+      i = (k % n) * 8
+      want = mazdacan.RADAR_CLUTTER_CYCLE[addr][i:i + 8]
+      assert frames[addr] == want[:7] + bytes([(want[7] & 0xf0) | (k % 16)])
+  # the tail of the loop is the stock empty template; 80 % 16 stamps a zero counter nibble
+  tail = mazdacan.create_radar_frames(0, mazdacan.RADAR_CLUTTER_OCCUPIED, None)
+  tail = {f.address: f.dat for f in tail}
+  for addr in mazdacan.RADAR_CLUTTER_ADDRS:
+    assert tail[addr] == mazdacan.RADAR_TRACK_56_EMPTY[:7] + bytes([0xc0])
 
 
 def test_radar_frames_counter_and_lead_track():

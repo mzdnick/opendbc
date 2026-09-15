@@ -3,6 +3,7 @@ import unittest
 from collections import deque
 
 from opendbc.car.lateral import apply_driver_steer_torque_limits
+from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaFlags, MazdaSafetyFlags
 from opendbc.car.structs import CarParams
 from opendbc.sunnypilot.car.mazda.values import MazdaSafetyFlagsSP
@@ -568,6 +569,30 @@ class TestMazdaLongitudinalSafety(TestMazdaSteerToZeroEpsSafety, common.Longitud
     for bus in (0, 2):
       for addr, dat in bad_messages.items():
         self.assertFalse(self._tx(common.make_msg(bus, addr, 8, dat)))
+
+  def test_clutter_track_cycle_allowed(self):
+    # every captured replay frame must pass like the stock empty patterns; the counter
+    # nibble is stamped per send, so any of its values must be accepted
+    for addr, blob in mazdacan.RADAR_CLUTTER_CYCLE.items():
+      for i in range(mazdacan.RADAR_CLUTTER_OCCUPIED):
+        dat = blob[i * 8:(i + 1) * 8]
+        for ctr in (0, 7, 15):
+          stamped = dat[:7] + bytes([(dat[7] & 0xf0) | ctr])
+          for bus in (0, 2):
+            for controls_allowed in (False, True):
+              self.safety.set_controls_allowed(controls_allowed)
+              self.assertTrue(self._tx(common.make_msg(bus, addr, 8, stamped)))
+
+  def test_clutter_track_corruption_blocked(self):
+    # one flipped body byte anywhere in a captured frame must fail
+    blob = mazdacan.RADAR_CLUTTER_CYCLE[0x365]
+    dat = blob[:8]
+    for i in range(7):
+      bad = dat[:i] + bytes([dat[i] ^ 0x01]) + dat[i + 1:]
+      self.assertFalse(self._tx(common.make_msg(0, 0x365, 8, bad)))
+    # a flipped byte-7 high nibble is a different frame; the low nibble is the live counter
+    bad_hi = dat[:7] + bytes([(dat[7] & 0x0f) | 0x40])
+    self.assertFalse(self._tx(common.make_msg(0, 0x365, 8, bad_hi)))
 
   def test_radar_uds_allowlist(self):
     # tester present and session control only, main bus only

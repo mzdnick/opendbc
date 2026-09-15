@@ -95,6 +95,83 @@ static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
   return valid;
 }
 
+// The occupied 5/6 replay: byte-exact stock captures (mazdacan.py RADAR_CLUTTER_CYCLE, 2022
+// CX-5 city drive) cycled by the controller so the camera keeps deciding auto high beams
+// under the radar takeover. The trailing empty-template frames of the cycle pass through the
+// empty pattern below; only the captured frames need membership here.
+#define MAZDA_CLUTTER_TRACK_FRAMES 80
+
+static const uint64_t mazda_clutter_track_5[MAZDA_CLUTTER_TRACK_FRAMES] = {
+  0x1d21b433b83c27c1ULL, 0x1bd1c833203e27c2ULL, 0x1a91da32804127c3ULL, 0x1941f231e04227c4ULL,
+  0x18120631384427c5ULL, 0x16c22030984727c6ULL, 0x15823c2ff84927c7ULL, 0x14325a2f504b27c8ULL,
+  0x12f27e2ea85127c9ULL, 0x11b2a82e005327caULL, 0x1062da2d585527cbULL, 0x0f031c2cb05727ccULL,
+  0x0db364ac105927cdULL, 0x0c73baab685927ceULL, 0x0b3420aac05a27cfULL, 0x09f496aa205a27c0ULL,
+  0xfff7fe29785b27c1ULL, 0x837066a8d05b1bc2ULL, 0xfff7fe28285c3fc3ULL, 0x80e06c27805f1bc4ULL,
+  0x7f806c26d8611bc5ULL, 0x7e306e2628631bc6ULL, 0x7ce06c2580631bc7ULL, 0xfff7fe24d8623fc8ULL,
+  0x7a40702430621bc9ULL, 0x78f0722388641bcaULL, 0x77a07422e0651bcbULL, 0x7650762238671bccULL,
+  0x7500782190681bcdULL, 0x73b07a20e8681bceULL, 0x72607820406a1bcfULL, 0x7100761f906d1bc0ULL,
+  0x6fb0761ee86f1bc1ULL, 0x6e50761e406f1bc2ULL, 0x6d00761d90701bc3ULL, 0x6ba0781ce8731bc4ULL,
+  0x6a507c1c38771bc5ULL, 0x68f07a1b907a1bc6ULL, 0x67a07c9ae07d1bc7ULL, 0x6610801a18831bc8ULL,
+  0x64c0841968881bc9ULL, 0x63808418d08b1bcaULL, 0x62408418288d1bcbULL, 0x60f0881780921bccULL,
+  0x5f908c16d0961bcdULL, 0x5e20901610991bceULL, 0x5cd09015689d1bcfULL, 0x5b709414c0a21bc0ULL,
+  0x5a10941410a61bc1ULL, 0x58c0941360ac1bc2ULL, 0x57609412c0b11bc3ULL, 0x5610961210b71bc4ULL,
+  0x54a0981158bf1bc5ULL, 0x53409a10b0c71bc6ULL, 0x51c0a00ff0d11bc7ULL, 0x5080a40f48da1bc8ULL,
+  0x4f20a80ea0e41bc9ULL, 0x4dd0ae0df0ef1bcaULL, 0x4c70b40d40fb1bcbULL, 0x4ae0ba0c810b1bccULL,
+  0x4990bc0bd11a1bcdULL, 0x4810c00b112d1bceULL, 0x46d0c00a71401bcfULL, 0x4580c409c9591bc0ULL,
+  0x4420c83b584a1881ULL, 0x42c0cc7ffbff1bc2ULL, 0x4160ce39f0481883ULL, 0x4040d43940491884ULL,
+  0x3f00d8b888491885ULL, 0x3dc0deb7d84a5886ULL, 0x3c60e2b720491887ULL, 0x3b10e8b668495888ULL,
+  0x3980ec35b8481889ULL, 0x3800f2350848588aULL, 0x3670f6345849188bULL, 0x3500fa33a84b588cULL,
+  0x3390fc32f050188dULL, 0x3220feb23850188eULL, 0x30b106318852188fULL, 0x2f410e30d8531880ULL,
+};
+
+static const uint64_t mazda_clutter_track_6[MAZDA_CLUTTER_TRACK_FRAMES] = {
+  0x5320a47ffbff37c1ULL, 0x51f0a87ffbff37c2ULL, 0x50b0ae7ffbff37c3ULL, 0x4f70b27ffbff37c4ULL,
+  0x4e20b47ffbff37c5ULL, 0x4ce0b67ffbff37c6ULL, 0x4b90be7ffbff37c7ULL, 0x4a50c47ffbff37c8ULL,
+  0x4900c87ffbff37c9ULL, 0x47b0cc7ffbff37caULL, 0x4670d47ffbff37cbULL, 0x4520da7ffbff37ccULL,
+  0x43d0e07ffbff37cdULL, 0x4280e47ffbff37ceULL, 0x4130e87ffbff37cfULL, 0x3ff0e47ffbff37c0ULL,
+  0x3eb0e67ffbff37c1ULL, 0x3d60e63528433602ULL, 0x3c10f03480443603ULL, 0x3ac0f833d8463604ULL,
+  0x3970fe3330473605ULL, 0x3821003288473606ULL, 0x36d10031e0453607ULL, 0x3581023138443608ULL,
+  0x3421063090443609ULL, 0x32e10c2fe843360aULL, 0x3181102f4043360bULL, 0x3031162e9843360cULL,
+  0x2ee11c2df042360dULL, 0x2d81222d4042360eULL, 0x2c31282c9841360fULL, 0x2ae1302bf0413600ULL,
+  0x2981382b40413601ULL, 0x2831402a98413602ULL, 0x26e14a29f0413603ULL, 0x25815429483f3604ULL,
+  0x24316028983d3605ULL, 0x22d16c27e83d3606ULL, 0x21717a27383d3607ULL, 0x1ff18e26703f3608ULL,
+  0x1e91a025c0433609ULL, 0x1d51b2252048360aULL, 0x1c01c8248049360bULL, 0x1ab1dc23d84b360cULL,
+  0x1961f423304e360dULL, 0x17f21622704f360eULL, 0x16a23621c852360fULL, 0x15425a2118583600ULL,
+  0x13d2862068593601ULL, 0x1282b41fb85b3602ULL, 0x1132e61f185d3603ULL, 0x0fe3221e705f3604ULL,
+  0x0e63741db0613605ULL, 0xfff7fe1d08643e06ULL, 0xfff7fe1c48673e07ULL, 0xfff7fe1ba8683e08ULL,
+  0xfff7fe1b006a7e09ULL, 0xfff7fe1a586e3e0aULL, 0xfff7fe19a8713e0bULL, 0xfff7fe18e0743e0cULL,
+  0xfff7fe1838773e0dULL, 0xfff7fe17707b3e0eULL, 0xfff7fe16d07f3e0fULL, 0xfff7fe1628833e00ULL,
+  0x86606e1578881601ULL, 0x84607c14d08b1602ULL, 0x82a08c14208f1603ULL, 0x80f09a1368941604ULL,
+  0x7f60a812b8991605ULL, 0x7e60ac1208a01606ULL, 0x7d40b29150a31607ULL, 0x61f08290a0ab1208ULL,
+  0xfff7fe0ff0b13e09ULL, 0x7870c60f40bc160aULL, 0x7700c80e88c3160bULL, 0x7590c60dd8cd160cULL,
+  0x7420c68d20da160dULL, 0x72c0c68c68f3160eULL, 0x7140cc0bb105160fULL, 0x6fd0d00b01151600ULL,
+};
+
+static bool mazda_clutter_frame_match(uint64_t capture, const CANPacket_t *msg) {
+  // byte 7's low nibble carries the live counter; every other bit must be exact
+  uint64_t dat = 0U;
+  for (int i = 0; i < 8; i++) {
+    dat = (dat << 8) | msg->data[i];
+  }
+  return ((dat ^ capture) & 0xFFFFFFFFFFFFFFF0ULL) == 0U;
+}
+
+static bool mazda_clutter_track_msg_valid(const CANPacket_t *msg) {
+  bool valid = false;
+  const uint64_t *table = NULL;
+  if (msg->addr == MAZDA_RADAR_TRACK_5) {
+    table = mazda_clutter_track_5;
+  } else if (msg->addr == MAZDA_RADAR_TRACK_6) {
+    table = mazda_clutter_track_6;
+  }
+  if (table != NULL) {
+    for (int i = 0; i < MAZDA_CLUTTER_TRACK_FRAMES; i++) {
+      valid = valid || mazda_clutter_frame_match(table[i], msg);
+    }
+  }
+  return valid;
+}
+
 static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
   // Permit only the distance and relative-velocity fields in the occupied-track template.
   return (msg->addr == MAZDA_RADAR_TRACK_4) &&
@@ -106,7 +183,8 @@ static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
 static bool mazda_radar_track_msg_valid(const CANPacket_t *msg) {
   // Occupied tracks represent perception and remain valid while controls are disengaged.
   return mazda_empty_radar_track_msg_valid(msg) ||
-         mazda_synthetic_lead_radar_track_msg_valid(msg);
+         mazda_synthetic_lead_radar_track_msg_valid(msg) ||
+         mazda_clutter_track_msg_valid(msg);
 }
 
 // track msgs coming from OP so that we know what CAM msgs to drop and what to forward

@@ -29,7 +29,11 @@ CYL_MODE_EXITS = (0x1E, 0x28)  # exit transients on the way back to all cylinder
 # vEgo, EB_RATIO_MIN_KPH on raw ENGINE_DATA speed. Braking to a stop, the raw signal dips
 # below its floor first and empties the coupling window at crawl, where the gear lines
 # crowd idle and the ratio is noise.
+# A steady crawl above both floors still couples: idle torque holds the car at constant
+# speed, so the ratio sits flat at idle rpm. Fuel cut never runs at idle rpm, so EB_MIN_RPM
+# separates the two regimes (creep stays under ~900 rpm on this car; overrun holds ~1000+).
 EB_MIN_V_EGO = 3.0            # m/s of filtered vEgo; the overrun gate
+EB_MIN_RPM = 1000.0           # raw ENGINE_DATA rpm; overrun keeps the engine above idle
 EB_CONFIRM_S = 0.5
 EB_CONFIRM_FRAMES = round(EB_CONFIRM_S / DT_CTRL)   # round never shortens the confirm time
 EB_LOCK_WINDOW_S = 0.5        # trailing window that proves the ratio flat
@@ -86,7 +90,7 @@ class CarStateExt:
     elif mode == CYL_MODE_NORMAL or mode in CYL_MODE_EXITS:
       # The byte has no exit ramp, so progress drops straight back to zero.
       self.cyl_entry_progress = 0.0
-      overrun = not gas_pressed and v_ego > EB_MIN_V_EGO and coupled
+      overrun = not gas_pressed and v_ego > EB_MIN_V_EGO and rpm > EB_MIN_RPM and coupled
       self.eb_confirm_frames = self.eb_confirm_frames + 1 if overrun else 0
       self.cyl_state = (CylinderState.engineBraking
                               if self.eb_confirm_frames >= EB_CONFIRM_FRAMES

@@ -299,6 +299,11 @@ def _initialize_mazda(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_
     if int(params_dict.get("MazdaTjaButton", 0)) == 1:
       CP_SP.flags |= MazdaFlagsSP.TJA_BUTTON.value
       CP_SP.safetyParam |= MazdaSafetyFlagsSP.TJA_BUTTON
+      # One lateral switch per car: a declared physical button wins over the dash setting.
+      CP_SP.flags &= ~MazdaFlagsSP.LKA_BUTTON.value
+    elif CP_SP.flags & MazdaFlagsSP.LKA_BUTTON:
+      # the platform declared the dash LKA button (sp_flags); hand the panda the same declaration
+      CP_SP.safetyParam |= MazdaSafetyFlagsSP.LKA_BUTTON
     # A developer's declaration, off by default: the radar takeover may be requested while the
     # car is moving (a fresh session after a forced-offroad exit or a process restart). No
     # radar has a moving handover on record yet; when one does, this becomes a firmware rule.

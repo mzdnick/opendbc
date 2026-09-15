@@ -16,7 +16,7 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.carstate import CAM_LANEINFO_FRESH_FRAMES, STOCK_CTS_ALERT_FRAMES
 from opendbc.car.mazda.tests.conftest import car_interface, packer
-from opendbc.car.mazda.values import CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams
 from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 CAM_LANEINFO = 0x440
@@ -760,3 +760,100 @@ def test_lane_lines_zero_alone_is_not_an_invalid_lkas_setting():
   CI, pk = car_interface(alpha_long=False), packer()
   lanes = pk.make_can_msg("CAM_LANEINFO", 2, {"LANE_LINES": 0})
   assert not feed(CI, 0, lanes)[0].invalidLkasSetting
+
+
+class TestLkaButtonToggle:
+  """The dash LKA button's edge as one ButtonType.lkas press per intervention-bit change."""
+
+  @staticmethod
+  def _settings(pk, on):
+    return pk.make_can_msg("CAM_SETTINGS", 2, {"LKAS_INERVENTION_ON1": on, "ILKAS_NTERVENTION_ON2": on})
+
+  def _lkas(self, ret):
+    lkas = structs.CarState.ButtonEvent.Type.lkas
+    return [be.pressed for be in ret.buttonEvents if be.type == lkas]
+
+  def _presses(self, ret):
+    return sum(self._lkas(ret))
+
+  def _feed(self, CI, pk, on, count=1, i0=0):
+    ret = None
+    for i in range(i0, i0 + count):
+      ret, _ = feed(CI, i, self._settings(pk, on))
+    return ret, i0 + count
+
+  def test_the_first_read_only_seeds_the_baseline(self):
+    for on in (1, 0):
+      CI, pk = car_interface(alpha_long=False), packer()
+      ret, _ = self._feed(CI, pk, on, count=5)
+      assert self._presses(ret) == 0, f"a drive starting with the bits at {on} emitted a press"
+
+  def test_each_edge_is_one_press_on_the_level_s_own_frame(self):
+    CI, pk = car_interface(alpha_long=False), packer()
+    ret, n = self._feed(CI, pk, 1, count=2)
+    assert not ret.invalidLkasSetting
+
+    ret, n = self._feed(CI, pk, 0, count=1, i0=n)
+    assert self._presses(ret) == 1 and ret.invalidLkasSetting
+    ret, n = self._feed(CI, pk, 0, count=4, i0=n)
+    assert self._presses(ret) == 0, "the held state kept pressing"
+
+    ret, n = self._feed(CI, pk, 1, count=1, i0=n)
+    assert self._presses(ret) == 1 and not ret.invalidLkasSetting
+
+  def test_the_press_is_released(self):
+    # a press with no release leaves the button held for the rest of the drive
+    CI, pk = car_interface(alpha_long=False), packer()
+    _, n = self._feed(CI, pk, 1, count=2)
+    ret, n = self._feed(CI, pk, 0, count=1, i0=n)
+    assert self._lkas(ret) == [True]
+    ret, _ = feed(CI, n)
+    assert self._lkas(ret) == [False], "the press must be released on the next frame"
+
+  def test_the_silent_cycles_between_arrivals_are_not_edges(self):
+    # the parser holds the last value; only a new value is a change
+    CI, pk = car_interface(alpha_long=False), packer()
+    _, n = self._feed(CI, pk, 1, count=2)
+    for i in range(n, n + 40):
+      ret, _ = feed(CI, i)
+      assert self._presses(ret) == 0
+
+  def test_one_bit_clearing_is_the_same_edge(self):
+    # ILKAS_NTERVENTION_ON2 alone clearing already reads as off
+    CI, pk = car_interface(alpha_long=False), packer()
+    _, n = self._feed(CI, pk, 1, count=2)
+    mixed = pk.make_can_msg("CAM_SETTINGS", 2, {"LKAS_INERVENTION_ON1": 1, "ILKAS_NTERVENTION_ON2": 0})
+    ret, _ = feed(CI, n, mixed)
+    assert self._presses(ret) == 1 and ret.invalidLkasSetting
+
+  def test_lane_lines_never_produce_a_press(self):
+    # the regression this class exists for: LANE_LINES was read as the button and it is not
+    CI, pk = car_interface(alpha_long=False), packer()
+    _, n = self._feed(CI, pk, 1, count=2)
+    for lane_lines in (0, 0, 0, 2, 0, 3, 0, 0):
+      ret, _ = feed(CI, n, (CAM_LANEINFO, bytes([0x42, lane_lines, 0, 0, 0, 0, 0, 0]), 2),
+                    self._settings(pk, 1))
+      n += 1
+      assert self._presses(ret) == 0, f"LANE_LINES {lane_lines} pressed the toggle"
+      assert not ret.invalidLkasSetting
+
+  def test_only_declared_platforms_read_the_toggle(self):
+    # undeclared platforms keep no whitelist entry, so their camera may not send the frame
+    CI, pk = car_interface(alpha_long=False, candidate=CAR.MAZDA_CX5), packer()
+    assert not CI.CP_SP.flags & MazdaFlagsSP.LKA_BUTTON
+    ret, n = self._feed(CI, pk, 1, count=2)
+    for on in (0, 0, 1, 1):
+      ret, n = self._feed(CI, pk, on, count=1, i0=n)
+      assert self._presses(ret) == 0, "an undeclared platform emitted a press"
+    # the level still reports the setting, so lateral is still refused with LKA off
+    ret, _ = self._feed(CI, pk, 0, count=1, i0=n)
+    assert ret.invalidLkasSetting
+
+  def test_a_declared_tja_button_owns_lateral_instead(self):
+    # one lateral switch per car; the panda's own read of these bits stands down the same way
+    CI, pk = car_interface(alpha_long=False), packer()
+    CI.CP_SP.flags |= MazdaFlagsSP.TJA_BUTTON
+    _, n = self._feed(CI, pk, 1, count=2)
+    for on in (0, 0, 1, 1, 0):
+      ret, n = self._feed(CI, pk, on, count=1, i0=n)
+      assert self._presses(ret) == 0, "the intervention bits pressed the toggle"

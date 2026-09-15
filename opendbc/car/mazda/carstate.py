@@ -84,6 +84,10 @@ class CarState(CarStateBase, CarStateExt):
     self.cam_laneinfo_silent_frames = 0
     self.cam_empty_seen = False
     self.cam_settings_seen = False
+    self.lkas_setting_off = False
+    self.lkas_setting_read = False
+    self.lkas_button = 0
+    self.lkas_button_prev = 0
     self.radar_session_refused = False
     self.radar_session_response = 0
     self.fsc_settled_frames = 0
@@ -313,6 +317,19 @@ class CarState(CarStateBase, CarStateExt):
     cam_settings = cp_cam.vl["CAM_SETTINGS"]
     ret.invalidLkasSetting = self.cam_settings_seen and not (cam_settings["LKAS_INERVENTION_ON1"] and cam_settings["ILKAS_NTERVENTION_ON2"])
 
+    # The dash LKA button has no CAN signal of its own: its edge is the setting's edge, read from
+    # the same level so the state that refuses lateral and the edge MADS toggles on cannot disagree.
+    self.lkas_button_prev = self.lkas_button
+    self.lkas_button = 0
+    # one lateral switch per car: a declared TJA button wins
+    lkas_button_owns_lateral = bool(self.CP_SP.flags & MazdaFlagsSP.LKA_BUTTON) and not self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON
+    if self.cam_settings_seen and lkas_button_owns_lateral:
+      if not self.lkas_setting_read:
+        self.lkas_setting_read = True
+      elif ret.invalidLkasSetting != self.lkas_setting_off:
+        self.lkas_button = 1
+      self.lkas_setting_off = ret.invalidLkasSetting
+
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:
         self.low_speed_alert = True
@@ -375,6 +392,7 @@ class CarState(CarStateBase, CarStateExt):
       *create_button_events(self.resume_button, prev_resume_button, {1: ButtonType.resumeCruise}),
       *create_button_events(self.main_button, prev_main_button, {1: ButtonType.mainCruise}),
       *create_button_events(self.tja_button, prev_tja_button, {1: ButtonType.lkas}),
+      *create_button_events(self.lkas_button, self.lkas_button_prev, {1: ButtonType.lkas}),
     ]
 
     CarStateExt.update(self, ret, ret_sp, can_parsers)

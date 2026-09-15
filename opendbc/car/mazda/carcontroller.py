@@ -38,6 +38,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.driver_torque_samples: deque[float] = deque(maxlen=self.params.STEER_DRIVER_SAMPLES if self.eps_2022 else 1)
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.brake_counter = 0
+    self.cruise_joined = False
     self.stop_and_go = StandstillHold()
     self.lead_adv = AdvertisedLead()
     self.long_counter = 0
@@ -103,9 +104,17 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     if self.steer_to_zero and (CS.steer_undelivered or CS.steer_first_engage_hold):
       apply_torque = 0
 
+    # A cruise engagement openpilot never joined is the driver's own: with LKA off, SET starts a
+    # stock-only ACC run. Stock-long only: under op-long, never-joined is a desync to cancel.
+    if not CS.out.cruiseState.enabled:
+      self.cruise_joined = False
+    elif CC.enabled:
+      self.cruise_joined = True
+    stock_never_joined = (not self.CP.openpilotLongitudinalControl and
+                          CS.out.cruiseState.enabled and not self.cruise_joined)
     # Do not cancel a stock MRCC engagement while the stock radar still owns the bus.
     stock_mrcc_owns_cruise = self.CP.openpilotLongitudinalControl and not CS.radar_was_silenced
-    if CC.cruiseControl.cancel and not stock_mrcc_owns_cruise:
+    if CC.cruiseControl.cancel and not stock_mrcc_owns_cruise and not stock_never_joined:
       # If brake is pressed, let us wait >70ms before trying to disable crz to avoid
       # a race condition with the stock system, where the second cancel from openpilot
       # will disable the crz 'main on'. crz ctrl msg runs at 50hz. 70ms allows us to

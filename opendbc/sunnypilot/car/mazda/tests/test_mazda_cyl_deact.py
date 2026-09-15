@@ -16,7 +16,7 @@ from opendbc.car.mazda.tests.conftest import car_interface
 from opendbc.sunnypilot.car.mazda.carstate_ext import (CYL_MODE_DEACTIVATED, CYL_MODE_ENTRY_FIRST,
                                                        CYL_MODE_ENTRY_LAST, CYL_MODE_NORMAL,
                                                        EB_CONFIRM_FRAMES, EB_LOCK_FRAMES,
-                                                       EB_MIN_V_EGO, CylinderState)
+                                                       EB_MIN_RPM, EB_MIN_V_EGO, CylinderState)
 
 MORE_GAS = 0x167
 
@@ -181,6 +181,35 @@ def test_fuel_cut_speed_threshold_is_strict(CI):
     CI.CS.update_cylinder_deactivation(*fr)
   assert CI.CS.cyl_state == CylinderState.normal
   CI.CS.update_cylinder_deactivation(*fr)
+  assert CI.CS.cyl_state == CylinderState.engineBraking
+
+
+def test_idle_creep_never_latches_engine_braking(CI):
+  # parking-lot crawl: pedal up above both speed floors, the ratio held flat by idle
+  # torque on a low gear line (15 kph x 52 rpm/kph = 780 rpm), yet no fuel cut runs
+  # at idle rpm, so the floor keeps the state normal however long the crawl holds
+  prime_coupling(CI.CS, ratio=52.0)
+  for _ in range(EB_CONFIRM_FRAMES * 3):
+    CI.CS.update_cylinder_deactivation(MODE_NORMAL, False, 15.0 / 3.6,
+                                       rpm=52.0 * 15.0, speed_kph=15.0)
+  assert CI.CS.cyl_state == CylinderState.normal
+
+
+def test_fuel_cut_rpm_threshold_is_strict(CI):
+  # exactly at the rpm threshold never latches; one step past latches after the confirm
+  # time. kph rides EB_MIN_RPM / LINE so the ratio stays pinned on the primed line and
+  # the rpm floor alone decides.
+  prime_coupling(CI.CS)
+  v_ego = EB_MIN_RPM / LINE / 3.6
+  for _ in range(EB_CONFIRM_FRAMES * 3):
+    CI.CS.update_cylinder_deactivation(MODE_NORMAL, False, v_ego,
+                                       rpm=EB_MIN_RPM, speed_kph=EB_MIN_RPM / LINE)
+  assert CI.CS.cyl_state == CylinderState.normal
+  step = (MODE_NORMAL, False, v_ego, EB_MIN_RPM + 0.25, (EB_MIN_RPM + 0.25) / LINE)
+  for _ in range(EB_CONFIRM_FRAMES - 1):
+    CI.CS.update_cylinder_deactivation(*step)
+  assert CI.CS.cyl_state == CylinderState.normal
+  CI.CS.update_cylinder_deactivation(*step)
   assert CI.CS.cyl_state == CylinderState.engineBraking
 
 

@@ -496,7 +496,7 @@ class TestMazdaLongitudinalSafety(TestMazdaSteerToZeroEpsSafety, common.Longitud
     radar_messages = {
       0x499: bytes.fromhex("0008c00000000000"),
       0x361: bytes.fromhex("fff7fefe1fc00080"),
-      0x362: bytes.fromhex("fff7fefe1fc78c80"),
+      0x362: bytes.fromhex("fff7fefe1fc00080"),
       0x363: bytes.fromhex("fff7fefe1fc00000"),
       0x364: bytes.fromhex("fff7fefe1fc00000"),
       0x365: bytes.fromhex("fff7fe7ffbff3fc0"),
@@ -555,10 +555,12 @@ class TestMazdaLongitudinalSafety(TestMazdaSteerToZeroEpsSafety, common.Longitud
         self.assertFalse(self._tx(common.make_msg(bus, 0x364, 8, bytes.fromhex(hexdat))))
 
   def test_unexpected_radar_tracks_blocked(self):
+    # 0x362 carries the retired phantom-track capture (c7 8c): a frozen non-empty
+    # slot that stock never sends idle
     bad_messages = {
       0x499: bytes.fromhex("0008c00100000000"),
       0x361: bytes.fromhex("fff7fefe1fc00180"),
-      0x362: bytes.fromhex("fff7fefe1fc00080"),
+      0x362: bytes.fromhex("fff7fefe1fc78c80"),
       0x363: bytes.fromhex("fff7fefe1fc00080"),
       0x364: bytes.fromhex("fff7fefe1fc00080"),
       0x365: bytes.fromhex("fff7fe7ffbff3f80"),

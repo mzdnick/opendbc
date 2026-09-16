@@ -6,7 +6,7 @@ from opendbc.car.mazda.values import Buttons
 RADAR_STATIC_MSG = (0x499, bytes.fromhex("0008c00000000000"))
 RADAR_TRACK_MSGS = {
   0x361: bytes.fromhex("fff7fefe1fc00080"),
-  0x362: bytes.fromhex("fff7fefe1fc78c80"),
+  0x362: bytes.fromhex("fff7fefe1fc00080"),
   0x363: bytes.fromhex("fff7fefe1fc00000"),
   0x364: bytes.fromhex("fff7fefe1fc00000"),
 }

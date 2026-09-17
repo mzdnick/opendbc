@@ -14,9 +14,9 @@ from opendbc.car import Bus, DT_CTRL
 from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.carstate import CAM_LANEINFO_FRESH_FRAMES, STOCK_CTS_ALERT_FRAMES
+from opendbc.car.mazda.carstate import CAM_LANEINFO_FRESH_FRAMES, LAT_BLOCK_CONFIRM_FRAMES, STOCK_CTS_ALERT_FRAMES
 from opendbc.car.mazda.tests.conftest import car_interface, packer
-from opendbc.car.mazda.values import CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams
 from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 CAM_LANEINFO = 0x440
@@ -436,13 +436,15 @@ class UndeliveredRig:
     self.packer = packer()
     self.frame = 0
 
-  def step(self, request, effective, blocked, speed_kph=40., driver_torque=0, track_state=0, fault=0):
+  def step(self, request, effective, blocked, speed_kph=40., driver_torque=0, track_state=0, fault=0, lane_lines=None):
     self.frame += 1
-    ret, _ = feed(self.CI, self.frame,
-                  self.packer.make_can_msg("STEER_RATE", 0, {"LKAS_REQUEST": request, "LKAS_EFFECTIVE": effective, "LKAS_BLOCK": blocked,
-                                                             "LKAS_TRACK_STATE": track_state, "LKAS_FAULT": fault}),
-                  self.packer.make_can_msg("WHEEL_SPEEDS", 0, {"FL": speed_kph, "FR": speed_kph, "RL": speed_kph, "RR": speed_kph}),
-                  self.packer.make_can_msg("STEER_TORQUE", 0, {"STEER_TORQUE_SENSOR": driver_torque}))
+    msgs = [self.packer.make_can_msg("STEER_RATE", 0, {"LKAS_REQUEST": request, "LKAS_EFFECTIVE": effective, "LKAS_BLOCK": blocked,
+                                                       "LKAS_TRACK_STATE": track_state, "LKAS_FAULT": fault}),
+            self.packer.make_can_msg("WHEEL_SPEEDS", 0, {"FL": speed_kph, "FR": speed_kph, "RL": speed_kph, "RR": speed_kph}),
+            self.packer.make_can_msg("STEER_TORQUE", 0, {"STEER_TORQUE_SENSOR": driver_torque})]
+    if lane_lines is not None:
+      msgs.append(self.packer.make_can_msg("CAM_LANEINFO", 2, {"LANE_LINES": lane_lines}))
+    ret, _ = feed(self.CI, self.frame, *msgs)
     return ret
 
 
@@ -458,6 +460,38 @@ class TestLkasFaultBit:
     ret = rig.step(0, 0, 1, track_state=0, fault=1)
     assert rig.CS.lkas_fault
     assert not ret.steerFaultPermanent  # the camera's ERR_BIT_1 reports it, as before
+
+
+class TestLatBlocked:
+  """LKAS_BLOCK published for the UI: the EPS holds it through standstill, a dash LKA-off,
+  and the fixed ~3 s re-arm after a re-enable, states where our request stands but no lateral
+  is applied. The border reads it to hold lateral as arming until the EPS takes the wheel."""
+
+  def test_block_latches_after_the_confirm_window(self):
+    rig = UndeliveredRig()
+    rig.step(0, 0, 1)  # the first frame only arms the lazy parser
+    ret = None
+    for _ in range(LAT_BLOCK_CONFIRM_FRAMES - 1):
+      ret = rig.step(0, 0, 1)
+    assert not ret.latBlocked
+    ret = rig.step(0, 0, 1)
+    assert ret.latBlocked
+
+  def test_a_lost_frame_never_latches(self):
+    rig = UndeliveredRig()
+    rig.step(0, 0, 1)
+    ret = None
+    for _ in range(LAT_BLOCK_CONFIRM_FRAMES * 3):
+      ret = rig.step(0, 0, 1 if rig.frame % 7 else 0)
+    assert not ret.latBlocked
+
+  def test_an_unblocked_frame_clears_immediately(self):
+    rig = UndeliveredRig()
+    rig.step(0, 0, 1)
+    for _ in range(LAT_BLOCK_CONFIRM_FRAMES):
+      rig.step(0, 0, 1)
+    ret = rig.step(0, 0, 0)  # the EPS grants lateral; the border turns cyan this frame
+    assert not ret.latBlocked
 
 
 class TestRejectionReport:
@@ -526,13 +560,38 @@ class TestSteerUndeliveredLatch:
     assert not ret.steerFaultTemporary
     # Alert only after the additional configured hold time.
     for _ in range(rig.params.STEER_UNDELIVERED_ALERT_FRAMES - 2):
-      ret = rig.step(0, 0, 1)
+      ret = rig.step(600, 0, 1)
     assert not ret.steerFaultTemporary
-    ret = rig.step(0, 0, 1)
+    ret = rig.step(600, 0, 1)
     assert ret.steerFaultTemporary
     ret = rig.step(600, 600, 0)
     assert not rig.CS.steer_undelivered
     assert not ret.steerFaultTemporary
+
+  def test_lane_keep_off_zero_delivery_is_not_a_fault(self):
+    # The EPS stops delivery the instant the button goes off; the debounced state lands up to
+    # a second later, so the off evidence must suppress the latch across that gap.
+    rig = UndeliveredRig()
+    for _ in range(2):
+      rig.step(600, 600, 0, lane_lines=2)
+    for _ in range(rig.params.STEER_UNDELIVERED_FRAMES + rig.params.STEER_UNDELIVERED_ALERT_FRAMES + 50):
+      ret = rig.step(600, 0, 1, lane_lines=0)
+    assert not rig.CS.steer_undelivered
+    assert not ret.steerFaultTemporary
+
+  def test_the_fault_still_alerts_once_lane_keep_returns(self):
+    rig = UndeliveredRig()
+    for _ in range(2):
+      rig.step(600, 600, 0, lane_lines=2)
+    for _ in range(50):
+      rig.step(600, 0, 1, lane_lines=0)
+    assert not rig.CS.steer_undelivered
+    # same-cycle off evidence starts the alert ladder one frame sooner than the old previous-cycle read
+    for _ in range(rig.params.STEER_UNDELIVERED_FRAMES + rig.params.STEER_UNDELIVERED_ALERT_FRAMES - 2):
+      ret = rig.step(600, 0, 1, lane_lines=2)
+    assert not ret.steerFaultTemporary
+    ret = rig.step(600, 0, 1, lane_lines=2)
+    assert ret.steerFaultTemporary
 
   def test_small_or_delivered_requests_never_latch(self):
     rig = UndeliveredRig()
@@ -558,8 +617,25 @@ class TestSteerUndeliveredLatch:
       ret = rig.step(600, 0, 1, speed_kph=25., track_state=1)
     assert rig.CS.steer_undelivered  # the command is still zeroed, only the banner is withheld
     assert not ret.steerFaultTemporary
-    # Clearing standby while still blocked makes the condition alertable.
+    # Clearing standby while still blocked makes the condition alertable once a request stands.
     ret = rig.step(0, 0, 1, speed_kph=25., track_state=0)
+    assert not ret.steerFaultTemporary
+    ret = rig.step(600, 0, 1, speed_kph=25., track_state=0)
+    assert ret.steerFaultTemporary
+
+  def test_the_alert_waits_for_a_standing_request(self):
+    # The latch can outlive the request that earned it: at a lane-keep re-arm the EPS clears
+    # standby a frame or two before the block, and a lockout after cruise-off holds the block
+    # with nobody asking. Four warning activations on one drive came from exactly that.
+    rig = UndeliveredRig()
+    for _ in range(rig.params.STEER_UNDELIVERED_FRAMES + rig.params.STEER_UNDELIVERED_ALERT_FRAMES + 10):
+      rig.step(600, 0, 1, track_state=1)
+    assert rig.CS.steer_undelivered
+    # Standby clears while blocked, but the request has stopped: no alert.
+    ret = rig.step(0, 0, 1, track_state=0)
+    assert not ret.steerFaultTemporary
+    # The request returns under the same block: now it alerts.
+    ret = rig.step(600, 0, 1, track_state=0)
     assert ret.steerFaultTemporary
 
   def test_driver_steering_with_the_request_still_latches(self):
@@ -760,3 +836,105 @@ def test_lane_lines_zero_alone_is_not_an_invalid_lkas_setting():
   CI, pk = car_interface(alpha_long=False), packer()
   lanes = pk.make_can_msg("CAM_LANEINFO", 2, {"LANE_LINES": 0})
   assert not feed(CI, 0, lanes)[0].invalidLkasSetting
+
+class TestLkaButtonToggle:
+  """Each confirmed LANE_LINES 0 <-> nonzero edge is one ButtonType.lkas press, the same event the TJA button produces on TJA cars."""
+
+  ON = 2
+  OFF = 0
+
+  @staticmethod
+  def _laneinfo(pk, lane_lines):
+    return pk.make_can_msg("CAM_LANEINFO", 2, {"LANE_LINES": lane_lines})
+
+  def _lkas(self, ret):
+    lkas = structs.CarState.ButtonEvent.Type.lkas
+    return [be.pressed for be in ret.buttonEvents if be.type == lkas]
+
+  def _presses(self, ret):
+    return sum(self._lkas(ret))
+
+  def _feed(self, CI, pk, lane_lines, count=1, i0=0):
+    ret = None
+    for i in range(i0, i0 + count):
+      ret, _ = feed(CI, i, self._laneinfo(pk, lane_lines))
+    return ret, i0 + count
+
+  def _armed(self, CI, pk, lane_lines=ON):
+    # two agreeing frames arm the baseline without firing
+    ret, n = self._feed(CI, pk, lane_lines, count=2)
+    assert self._presses(ret) == 0
+    return n
+
+  def test_the_first_read_only_seeds_the_baseline(self):
+    # a boot with lane keep already off must not emit an enable press when the first frames land
+    for lane_lines in (self.ON, self.OFF):
+      CI, pk = car_interface(alpha_long=False), packer()
+      ret, _ = self._feed(CI, pk, lane_lines, count=3)
+      assert self._presses(ret) == 0, f"a drive starting at LANE_LINES {lane_lines} emitted a press"
+
+  def test_each_edge_is_one_press(self):
+    CI, pk = car_interface(alpha_long=False), packer()
+    n = self._armed(CI, pk)
+    ret, n = self._feed(CI, pk, self.OFF, count=2, i0=n)
+    assert self._presses(ret) == 1 and ret.lkaButtonOff
+    ret, n = self._feed(CI, pk, self.OFF, count=3, i0=n)
+    assert self._presses(ret) == 0, "the held state kept pressing"
+    assert ret.lkaButtonOff
+    ret, n = self._feed(CI, pk, self.ON, count=2, i0=n)
+    assert self._presses(ret) == 1 and not ret.lkaButtonOff
+
+  def test_the_press_is_released(self):
+    # a press with no release leaves the button held for the rest of the drive
+    CI, pk = car_interface(alpha_long=False), packer()
+    n = self._armed(CI, pk)
+    ret, n = self._feed(CI, pk, self.OFF, count=2, i0=n)
+    assert self._lkas(ret) == [True]
+    ret, _ = feed(CI, n)
+    assert self._lkas(ret) == [False], "the press must be released on the next cycle"
+
+  def test_lane_state_changes_are_not_presses(self):
+    CI, pk = car_interface(alpha_long=False), packer()
+    n = self._armed(CI, pk)
+    for v in (3, 4, 1, 2):
+      ret, n = self._feed(CI, pk, v, count=2, i0=n)
+      assert self._presses(ret) == 0, f"LANE_LINES {v} fired a press"
+      assert not ret.lkaButtonOff
+
+  def test_single_frame_glitch_is_ignored(self):
+    CI, pk = car_interface(alpha_long=False), packer()
+    n = self._armed(CI, pk)
+    _, n = self._feed(CI, pk, self.OFF, count=1, i0=n)
+    ret, _ = self._feed(CI, pk, self.ON, count=3, i0=n)
+    assert self._presses(ret) == 0
+
+  def test_dropout_does_not_fire_and_a_real_edge_still_does(self):
+    CI, pk = car_interface(alpha_long=False), packer()
+    n = self._armed(CI, pk)
+    for i in range(n, n + 300):  # 3 s of silence, past any freshness window
+      CI.update([(t_ns(i), [])])
+    ret, _ = self._feed(CI, pk, self.ON, count=2, i0=n + 300)
+    assert self._presses(ret) == 0, "the dropout itself fired a press"
+    ret, _ = self._feed(CI, pk, self.OFF, count=2, i0=n + 302)
+    assert self._presses(ret) == 1
+
+  def test_only_declared_platforms_read_the_toggle(self):
+    # an undeclared platform keeps no read of the button state at all
+    CI, pk = car_interface(alpha_long=False, candidate=CAR.MAZDA_CX5), packer()
+    assert not CI.CP_SP.flags & MazdaFlagsSP.LKA_BUTTON
+    ret, n = self._feed(CI, pk, self.ON, count=2)
+    for lane_lines in (self.OFF, self.OFF, self.ON, self.ON):
+      ret, n = self._feed(CI, pk, lane_lines, count=1, i0=n)
+      assert self._presses(ret) == 0, "an undeclared platform emitted a press"
+      assert not ret.lkaButtonOff
+
+  def test_a_declared_tja_button_owns_the_press_not_the_state(self):
+    # one lateral switch per car: the physical button owns the press, but the dash
+    # button's off state still names the lateral refusal instead of a steering fault
+    CI, pk = car_interface(alpha_long=False), packer()
+    CI.CP_SP.flags |= MazdaFlagsSP.TJA_BUTTON
+    ret, n = self._feed(CI, pk, self.ON, count=2)
+    for lane_lines in (self.OFF, self.OFF, self.ON, self.ON, self.OFF):
+      ret, n = self._feed(CI, pk, lane_lines, count=2, i0=n)
+      assert self._presses(ret) == 0, "LANE_LINES pressed the toggle"
+      assert ret.lkaButtonOff == (lane_lines == self.OFF)

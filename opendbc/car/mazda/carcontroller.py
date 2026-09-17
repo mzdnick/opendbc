@@ -38,6 +38,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.driver_torque_samples: deque[float] = deque(maxlen=self.params.STEER_DRIVER_SAMPLES if self.eps_2022 else 1)
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.brake_counter = 0
+    self.cruise_joined = False
     self.stop_and_go = StandstillHold()
     self.lead_adv = AdvertisedLead()
     self.long_counter = 0
@@ -103,9 +104,21 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     if self.steer_to_zero and (CS.steer_undelivered or CS.steer_first_engage_hold):
       apply_torque = 0
 
+    # With LKA off, a SET press starts a plain stock ACC run with openpilot fully out: the driver
+    # started it, so our cancel must not kill it. Stock-long only; under alpha-long it is a desync and still cancels.
+    if not CS.out.cruiseState.enabled:
+      self.cruise_joined = False
+    elif CC.enabled:
+      self.cruise_joined = True
+    # The declared TJA button switches lateral only, and stock never disarms MRCC for its press:
+    # the disable the press triggers hands the joined run back to the driver. Runs every cycle
+    # the bit is on, so it also clears the cycle before the disable lands.
+    if not self.CP.openpilotLongitudinalControl and CS.tja_button:
+      self.cruise_joined = False
+    stock_never_joined = not self.CP.openpilotLongitudinalControl and CS.out.cruiseState.enabled and not self.cruise_joined
     # Do not cancel a stock MRCC engagement while the stock radar still owns the bus.
     stock_mrcc_owns_cruise = self.CP.openpilotLongitudinalControl and not CS.radar_was_silenced
-    if CC.cruiseControl.cancel and not stock_mrcc_owns_cruise:
+    if CC.cruiseControl.cancel and not stock_mrcc_owns_cruise and not stock_never_joined:
       # If brake is pressed, let us wait >70ms before trying to disable crz to avoid
       # a race condition with the stock system, where the second cancel from openpilot
       # will disable the crz 'main on'. crz ctrl msg runs at 50hz. 70ms allows us to

@@ -139,7 +139,7 @@ def set_car_state(cs: CarState, out=None, *, brake_hold=False, stock_radar_alive
                   radar_bus_healthy=True, steer_undelivered=False,
                   lkas_blocked=False, lkas_effective=0, steer_first_engage_hold=False, lkas_allowed_speed=True, lkas_rejected=0,
                   lkas_fault=False, crz_btns_counter=0, stock_tja=0,
-                  cancel_button=0, accel_button=0, decel_button=0, **out_kwargs) -> CarState:
+                  cancel_button=0, accel_button=0, decel_button=0, tja_button=0, **out_kwargs) -> CarState:
   """Put the controller-facing state of a real CarState where a test wants it.
 
   Every keyword is reset to its default on each call, so a test that drives frame by frame
@@ -177,6 +177,7 @@ def set_car_state(cs: CarState, out=None, *, brake_hold=False, stock_radar_alive
   cs.cancel_button = cancel_button
   cs.accel_button = accel_button
   cs.decel_button = decel_button
+  cs.tja_button = tja_button
   return cs
 
 

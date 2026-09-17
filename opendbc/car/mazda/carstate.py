@@ -14,6 +14,7 @@ STOCK_RADAR_GUARD_FRAMES = round(CarControllerParams.STOCK_RADAR_GUARD_T / DT_CT
 CANCEL_CONTEXT_FRAMES = int(CarControllerParams.CANCEL_CONTEXT_T / DT_CTRL)
 CAM_LANEINFO_FRESH_FRAMES = int(CarControllerParams.CAM_LANEINFO_FRESH_T / DT_CTRL)
 STOCK_CTS_ALERT_FRAMES = int(CarControllerParams.STOCK_CTS_ALERT_T / DT_CTRL)
+LAT_BLOCK_CONFIRM_FRAMES = round(0.2 / DT_CTRL)  # the EPS bit is steady; this only sheds a lost frame
 # Bus witnesses: independent vehicle messages whose silence says the bus is gone, not the radar.
 # Windows at the CANParser's own validity threshold, ten periods; a stricter window would revoke
 # radar ownership on a gap the parser still accepts. {message: (signal, fresh frames)}
@@ -34,6 +35,7 @@ class CarState(CarStateBase, CarStateExt):
     self.lkas_blocked = False
     self.lkas_effective = 0
     self.lkas_track_state = False
+    self.lat_block_frames = 0
     # LKAS non-delivery state is used only with the steer-to-zero EPS.
     self.params = CarControllerParams(CP)
     self.steer_undelivered_frames = 0
@@ -83,6 +85,11 @@ class CarState(CarStateBase, CarStateExt):
     self.cam_laneinfo_seen = False
     self.cam_laneinfo_silent_frames = 0
     self.cam_empty_seen = False
+    self.lkas_on_candidate = False
+    self.lkas_on_stable = False
+    self.lane_lines_armed = False
+    self.lkas_button = 0
+    self.lkas_button_prev = 0
     self.radar_session_refused = False
     self.radar_session_response = 0
     self.fsc_settled_frames = 0
@@ -103,6 +110,7 @@ class CarState(CarStateBase, CarStateExt):
     return self.radar_bus_healthy and self.stock_radar_silent_frames >= STOCK_RADAR_GUARD_FRAMES
 
   def update_steer_undelivered(self, v_ego_raw: float, lkas_request: float) -> None:
+    lane_keep_off = self.lane_lines_armed and not (self.lkas_on_stable and self.lkas_on_candidate)
     lkas_blocked, lkas_track_state = self.lkas_blocked, self.lkas_track_state
     self.lkas_delivered |= self.lkas_effective != 0
     self.steer_first_engage_hold = (not self.lkas_delivered and lkas_blocked and lkas_track_state and
@@ -111,7 +119,8 @@ class CarState(CarStateBase, CarStateExt):
     # Latch sustained zero LKAS_EFFECTIVE for a real request before the camera faults. Clear
     # with LKAS_BLOCK because a zeroed command provides no delivery signal. Driver torque does
     # not gate entry because torque in the requested direction does not reduce the request.
-    if not lkas_blocked:
+    # Lane keep off also clears the latch: zero delivery is then the driver's choice, not a fault.
+    if not lkas_blocked or lane_keep_off:
       self.steer_undelivered_frames = 0
       self.steer_undelivered = False
       self.steer_undelivered_alert = False
@@ -131,8 +140,10 @@ class CarState(CarStateBase, CarStateExt):
       # identifies normal low-speed standby, which can remain set briefly during a brisk
       # launch; the origin speed catches the standby blocks it does not, the ones carried
       # from a stop through a slow crawl until TRACK_STATE clears with the block still on.
+      # The latch can outlive the request that earned it: the request must still stand.
       self.steer_undelivered_frames += 1
       if (not self.steer_undelivered_alert and not lkas_track_state and
+          abs(lkas_request) > self.params.STEER_UNDELIVERED_MIN and
           self.steer_undelivered_frames >= self.params.STEER_UNDELIVERED_FRAMES + self.params.STEER_UNDELIVERED_ALERT_FRAMES and
           v_ego_raw >= self.params.STEER_UNDELIVERED_ALERT_MIN_SPEED and
           self.lkas_block_origin_speed >= self.params.STEER_UNDELIVERED_ALERT_ORIGIN_SPEED):
@@ -189,6 +200,11 @@ class CarState(CarStateBase, CarStateExt):
     self.lkas_blocked = lkas_blocked
     self.lkas_effective = cp.vl["STEER_RATE"]["LKAS_EFFECTIVE"]
     self.lkas_track_state = cp.vl["STEER_RATE"]["LKAS_TRACK_STATE"] == 1
+    # LKAS_BLOCK also covers standstill and the fixed ~3 s re-arm after a dash LKA re-enable,
+    # states where the EPS takes our request but holds no lateral: published so the UI can hold
+    # lateral as arming instead of claiming control the EPS has not granted yet.
+    self.lat_block_frames = self.lat_block_frames + 1 if lkas_blocked else 0
+    ret.latBlocked = self.lat_block_frames >= LAT_BLOCK_CONFIRM_FRAMES
     # The 2022 EPS raises LKAS_FAULT once its 0x243 stream has stopped for about 0.6 s; the
     # camera's own fault follows 5.3 s later and neither clears before the next ignition cycle.
     # Decoded for the log and tooling; the driver-facing fault stays the camera's own.
@@ -196,6 +212,26 @@ class CarState(CarStateBase, CarStateExt):
     # The panda refuses every LKA frame while it is not controlling, so a refused zero-torque
     # frame carries nothing the controller needs; count the torque requests it turned away.
     self.lkas_rejected = sum(1 for v in can_parsers[Bus.loopback].vl_all["CAM_LKAS"]["LKAS_REQUEST"] if v != 0)
+    # The dash LKA button has no CAN signal of its own; LANE_LINES is the state it drives.
+    self.lkas_button_prev = self.lkas_button
+    self.lkas_button = 0
+    if self.CP_SP.flags & MazdaFlagsSP.LKA_BUTTON:
+      lane_lines_vals = cp_cam.vl_all["CAM_LANEINFO"]["LANE_LINES"]
+      if len(lane_lines_vals) > 0:
+        lkas_on = int(lane_lines_vals[-1]) != 0
+        if lkas_on != self.lkas_on_candidate:
+          self.lkas_on_candidate = lkas_on
+        elif not self.lane_lines_armed:
+          self.lane_lines_armed = True
+          self.lkas_on_stable = lkas_on
+        elif lkas_on != self.lkas_on_stable:
+          self.lkas_on_stable = lkas_on
+          # one lateral switch per car: a declared TJA button owns the press
+          if not self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON:
+            self.lkas_button = 1
+      # the state is not the switch: a TJA car reads it too, so its dash press names a driver-choice refusal
+      ret.lkaButtonOff = self.lane_lines_armed and not self.lkas_on_stable
+
     if self.CP.flags & MazdaFlags.STEER_TO_ZERO_EPS:
       self.update_steer_undelivered(ret.vEgoRaw, cp.vl["STEER_RATE"]["LKAS_REQUEST"])
 
@@ -371,6 +407,7 @@ class CarState(CarStateBase, CarStateExt):
       *create_button_events(self.resume_button, prev_resume_button, {1: ButtonType.resumeCruise}),
       *create_button_events(self.main_button, prev_main_button, {1: ButtonType.mainCruise}),
       *create_button_events(self.tja_button, prev_tja_button, {1: ButtonType.lkas}),
+      *create_button_events(self.lkas_button, self.lkas_button_prev, {1: ButtonType.lkas}),
     ]
 
     CarStateExt.update(self, ret, ret_sp, can_parsers)

@@ -3,6 +3,7 @@ import unittest
 from collections import deque
 
 from opendbc.car.lateral import apply_driver_steer_torque_limits
+from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaFlags, MazdaSafetyFlags
 from opendbc.car.structs import CarParams
 from opendbc.sunnypilot.car.mazda.values import MazdaSafetyFlagsSP
@@ -495,7 +496,7 @@ class TestMazdaLongitudinalSafety(TestMazdaSteerToZeroEpsSafety, common.Longitud
     radar_messages = {
       0x499: bytes.fromhex("0008c00000000000"),
       0x361: bytes.fromhex("fff7fefe1fc00080"),
-      0x362: bytes.fromhex("fff7fefe1fc78c80"),
+      0x362: bytes.fromhex("fff7fefe1fc00080"),
       0x363: bytes.fromhex("fff7fefe1fc00000"),
       0x364: bytes.fromhex("fff7fefe1fc00000"),
       0x365: bytes.fromhex("fff7fe7ffbff3fc0"),
@@ -554,10 +555,12 @@ class TestMazdaLongitudinalSafety(TestMazdaSteerToZeroEpsSafety, common.Longitud
         self.assertFalse(self._tx(common.make_msg(bus, 0x364, 8, bytes.fromhex(hexdat))))
 
   def test_unexpected_radar_tracks_blocked(self):
+    # 0x362 carries the retired phantom-track capture (c7 8c): a frozen non-empty
+    # slot that stock never sends idle
     bad_messages = {
       0x499: bytes.fromhex("0008c00100000000"),
       0x361: bytes.fromhex("fff7fefe1fc00180"),
-      0x362: bytes.fromhex("fff7fefe1fc00080"),
+      0x362: bytes.fromhex("fff7fefe1fc78c80"),
       0x363: bytes.fromhex("fff7fefe1fc00080"),
       0x364: bytes.fromhex("fff7fefe1fc00080"),
       0x365: bytes.fromhex("fff7fe7ffbff3f80"),
@@ -568,6 +571,31 @@ class TestMazdaLongitudinalSafety(TestMazdaSteerToZeroEpsSafety, common.Longitud
     for bus in (0, 2):
       for addr, dat in bad_messages.items():
         self.assertFalse(self._tx(common.make_msg(bus, addr, 8, dat)))
+
+  def test_synthetic_track_cycle_allowed(self):
+    # the occupied 5/6 frame must pass on the camera bus; the counter nibble is stamped per
+    # send, so any of its values must be accepted. Occupied frames are camera-facing: the
+    # body bus rejects them and carries the empty templates, which stay valid on both buses.
+    for addr, dat in mazdacan.SYNTHETIC_TRACK_CYCLE.items():
+      for ctr in (0, 7, 15):
+        stamped = dat[:7] + bytes([(dat[7] & 0xf0) | ctr])
+        for controls_allowed in (False, True):
+          self.safety.set_controls_allowed(controls_allowed)
+          self.assertTrue(self._tx(common.make_msg(2, addr, 8, stamped)))
+    dat = mazdacan.SYNTHETIC_TRACK_CYCLE[0x365]
+    self.assertFalse(self._tx(common.make_msg(0, 0x365, 8, dat[:7] + bytes([(dat[7] & 0xf0) | 7]))))
+    for ctr in (0, 15):
+      stamped = mazdacan.RADAR_TRACK_56_EMPTY[:7] + bytes([0xc0 | ctr])
+      for bus in (0, 2):
+        self.assertTrue(self._tx(common.make_msg(bus, 0x365, 8, stamped)))
+
+  def test_synthetic_track_corruption_blocked(self):
+    # any flipped body byte is a different frame and must fail; byte 7's low nibble is the
+    # live counter and stays exempt
+    dat = mazdacan.SYNTHETIC_TRACK_CYCLE[0x365]
+    for i in range(7):
+      self.assertFalse(self._tx(common.make_msg(2, 0x365, 8, dat[:i] + bytes([dat[i] ^ 0x01]) + dat[i + 1:])))
+    self.assertFalse(self._tx(common.make_msg(2, 0x365, 8, dat[:7] + bytes([(dat[7] & 0x0f) | 0x40]))))
 
   def test_radar_uds_allowlist(self):
     # tester present and session control only, main bus only

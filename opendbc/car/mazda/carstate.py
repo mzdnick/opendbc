@@ -55,6 +55,9 @@ class CarState(CarStateBase, CarStateExt):
     # The camera's own TJA/CTS state from its 0x440: 0 off, 2 armed, 3 to 5 steering. Live,
     # never latched; 0 when the camera is stale.
     self.stock_tja = 0
+    # The camera's HBC arm state, 0x440 BIT2. The stock radar relays it to CRZ_CTRL bit 13 for
+    # the dash's green HBC light; under the radar takeover the controller relays it instead.
+    self.hbc_armed = False
     # Raised by the controller once per arming episode when its camera presses did not clear
     # stock_tja; consumed here into a stockLkas pulse.
     self.stock_cts_stuck = False
@@ -328,7 +331,7 @@ class CarState(CarStateBase, CarStateExt):
       ret.cruiseState.enabled = self.cruise_enabled and not self.cruise_enabled_blocked
 
       # The FSC teardown gate requires fresh, settled CAM_LANEINFO without ERR_BIT. BIT2 is
-      # excluded because it may remain set for an entire ignition cycle.
+      # excluded: it is the auto high-beam arming bit and stays set for as long as HBC is armed.
       laneinfo = cp_cam.vl["CAM_LANEINFO"]
       settled = cam_laneinfo_fresh and not (laneinfo["NO_ERR_BIT"] or laneinfo["ERR_BIT"])
       self.fsc_settled_frames = self.fsc_settled_frames + 1 if settled else 0
@@ -370,6 +373,7 @@ class CarState(CarStateBase, CarStateExt):
     self.cam_laneinfo = cp_cam.vl["CAM_LANEINFO"]
     ret.steerFaultPermanent = cp_cam.vl["CAM_LKAS"]["ERR_BIT_1"] == 1
     self.stock_tja = int(self.cam_laneinfo["TJA"]) if cam_laneinfo_fresh else 0
+    self.hbc_armed = cam_laneinfo_fresh and self.cam_laneinfo["BIT2"] == 1
 
     # The camera stayed armed through the controller's presses: one pulse of stockLkas, which
     # the Mazda event hook turns into a one-shot warning. openpilot keeps steering; the panda

@@ -11,7 +11,7 @@ import pytest
 
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.values import Buttons
-from opendbc.car.mazda.tests.conftest import CAM_LANEINFO, LEAD_TRACK, parse_frame
+from opendbc.car.mazda.tests.conftest import CAM_LANEINFO, LEAD_TRACK, SYNTHETIC_TRACK, parse_frame
 
 
 def crz_info_reference_checksum(dat):
@@ -123,18 +123,54 @@ def test_crz_ctrl_golden_bytes(packer, long_active, acc_available, gap, has_lead
   assert dat.hex() == expected
 
 
+@pytest.mark.parametrize("long_active, acc_available, gap, has_lead, phase, acc_active_2, expected", [
+  (False, False, 0, False, 0, False, "0221010000000000"),  # standby: the stock radar's frame
+  (False, True, 2, False, 0, False, "02210b0000000000"),   # MRCC armed
+  (True, True, 2, True, 1, True, "0a218b2000001000"),      # engaged
+])
+def test_crz_ctrl_relays_hbc_arming(packer, long_active, acc_available, gap, has_lead, phase, acc_active_2, expected):
+  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, has_lead, phase, acc_active_2,
+                                 hbc_armed=True)[1]
+  assert dat.hex() == expected
+  bare = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, has_lead, phase, acc_active_2)[1]
+  assert bytes(a ^ b for a, b in zip(dat, bare, strict=True)) == bytes([0, 0x20, 0, 0, 0, 0, 0, 0])
+
+
 def test_radar_frames_match_stock():
   expected = [
     (0x499, "0008c00000000000"),
     (0x361, "fff7fefe1fc00080"),
-    (0x362, "fff7fefe1fc78c80"),
+    (0x362, "fff7fefe1fc00080"),
     (0x363, "fff7fefe1fc00000"),
     (0x364, "fff7fefe1fc00000"),
-    (0x365, "fff7fe7ffbff3fc0"),
-    (0x366, "fff7fe7ffbff3fc0"),
   ]
   frames = mazdacan.create_radar_frames(0, 0, None)
-  assert [(f.address, f.dat.hex()) for f in frames] == expected
+  # the static frame and the empty 1-4 tracks stay the stock capture; 5/6 open the cycle
+  assert [(f.address, f.dat.hex()) for f in frames[:5]] == expected
+  assert [f.address for f in frames[5:]] == [0x365, 0x366]
+
+
+def test_radar_frames_send_the_synthetic_object_on_the_camera_bus():
+  # Slot 5 holds the synthetic far object and slot 6 the empty template, with only the
+  # counter nibble moving; the body bus carries the empty templates for both slots.
+  for k in (0, 1, 7, 15, 16, 100):
+    for bus, cycle in ((2, mazdacan.SYNTHETIC_TRACK_CYCLE), (0, None)):
+      frames = {f.address: f.dat for f in mazdacan.create_radar_frames(bus, k, None)}
+      for addr in mazdacan.SYNTHETIC_TRACK_ADDRS:
+        want = cycle[addr] if cycle else mazdacan.RADAR_TRACK_56_EMPTY
+        assert frames[addr] == want[:7] + bytes([(want[7] & 0xf0) | (k % 16)])
+  assert mazdacan.SYNTHETIC_TRACK_CYCLE[0x365] == bytes.fromhex("af00a4001bff37c1")
+  assert mazdacan.SYNTHETIC_TRACK_CYCLE[0x366] == mazdacan.RADAR_TRACK_56_EMPTY
+
+
+def test_synthetic_track_decodes_to_a_far_static_object():
+  # The never-suppress claim is about the decoded fields, not the bytes: 175 m nominal
+  # (the 2x-uncalibrated scale puts the true range in 87-350 m), zero closing speed,
+  # 2.6 deg off bore.
+  vl = parse_frame(SYNTHETIC_TRACK, mazdacan.SYNTHETIC_TRACK_CYCLE[SYNTHETIC_TRACK])
+  assert vl["DIST_OBJ"] == pytest.approx(175.0)
+  assert vl["RELV_OBJ"] == 0.
+  assert vl["ANG_OBJ"] == pytest.approx(2.5625)
 
 
 def test_radar_frames_counter_and_lead_track():

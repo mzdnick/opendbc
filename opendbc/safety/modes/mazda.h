@@ -74,10 +74,7 @@ static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
             (msg->data[2] == 0xfeU) && (msg->data[3] == 0xfeU) &&
             (msg->data[4] == 0x1fU);
 
-    if (msg->addr == MAZDA_RADAR_TRACK_2) {
-      valid = valid && (msg->data[5] == 0xc7U) && (msg->data[6] == 0x8cU) &&
-              ((msg->data[7] & 0xf0U) == 0x80U);
-    } else if ((msg->addr == MAZDA_RADAR_TRACK_3) || (msg->addr == MAZDA_RADAR_TRACK_4)) {
+    if ((msg->addr == MAZDA_RADAR_TRACK_3) || (msg->addr == MAZDA_RADAR_TRACK_4)) {
       valid = valid && (msg->data[5] == 0xc0U) && (msg->data[6] == 0x00U) &&
               ((msg->data[7] & 0xf0U) == 0x00U);
     } else {
@@ -95,6 +92,48 @@ static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
   return valid;
 }
 
+// The only occupied 5/6 pattern is the synthetic far object in slot 5 (mazdacan.py
+// SYNTHETIC_TRACK_CYCLE); slot 6 sends the empty template. Occupied frames are camera-facing
+// only; the body bus carries the empty templates through the empty pattern below.
+#define MAZDA_SYNTHETIC_TRACK_FRAMES 1
+
+static bool mazda_synthetic_track_frame_match(uint64_t capture, const CANPacket_t *msg) {
+  // byte 7's low nibble carries the live counter; every other bit must be exact
+  uint64_t dat = 0U;
+  for (int i = 0; i < 8; i++) {
+    dat = (dat << 8) | msg->data[i];
+  }
+  return ((dat ^ capture) & 0xFFFFFFFFFFFFFFF0ULL) == 0U;
+}
+
+static bool mazda_synthetic_track_msg_valid(const CANPacket_t *msg) {
+  // The occupied replay is camera-facing only; the body bus carries the empty templates
+  // through the empty pattern above.
+  bool valid = false;
+  if (msg->bus == (unsigned char)MAZDA_CAM) {
+    // block scope: the tables have a single consumer (misra-c2012-8.9)
+    static const uint64_t mazda_synthetic_track_5[MAZDA_SYNTHETIC_TRACK_FRAMES] = {
+      0xaf00a4001bff37c1ULL,
+    };
+    static const uint64_t mazda_synthetic_track_6[MAZDA_SYNTHETIC_TRACK_FRAMES] = {
+      0xfff7fe7ffbff3fc0ULL,
+    };
+    const uint64_t *table = NULL;
+    if (msg->addr == MAZDA_RADAR_TRACK_5) {
+      table = mazda_synthetic_track_5;
+    } else if (msg->addr == MAZDA_RADAR_TRACK_6) {
+      table = mazda_synthetic_track_6;
+    } else {
+    }
+    if (table != NULL) {
+      for (int i = 0; i < MAZDA_SYNTHETIC_TRACK_FRAMES; i++) {
+        valid = valid || mazda_synthetic_track_frame_match(table[i], msg);
+      }
+    }
+  }
+  return valid;
+}
+
 static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
   // Permit only the distance and relative-velocity fields in the occupied-track template.
   return (msg->addr == MAZDA_RADAR_TRACK_4) &&
@@ -106,7 +145,8 @@ static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
 static bool mazda_radar_track_msg_valid(const CANPacket_t *msg) {
   // Occupied tracks represent perception and remain valid while controls are disengaged.
   return mazda_empty_radar_track_msg_valid(msg) ||
-         mazda_synthetic_lead_radar_track_msg_valid(msg);
+         mazda_synthetic_lead_radar_track_msg_valid(msg) ||
+         mazda_synthetic_track_msg_valid(msg);
 }
 
 // track msgs coming from OP so that we know what CAM msgs to drop and what to forward

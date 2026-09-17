@@ -789,6 +789,181 @@ class TestMazdaTjaMads(unittest.TestCase):
     self.assertTrue(self.safety.get_acc_main_on())
 
 
+class TestMazdaLkaButtonMads(unittest.TestCase):
+  """The dash LKA button as the MADS lateral switch: the panda reads LANE_LINES itself to re-arm lateral."""
+
+  def setUp(self):
+    self.packer = CANPackerSafety("mazda_2017")
+    self.safety = libsafety_py.libsafety
+    self._init(tja_button=False)
+
+  def _init(self, tja_button=False, lka_button=True, param=0):
+    param_sp = 0
+    if tja_button:
+      param_sp |= MazdaSafetyFlagsSP.TJA_BUTTON
+    if lka_button:
+      param_sp |= MazdaSafetyFlagsSP.LKA_BUTTON
+    self.safety.set_current_safety_param_sp(param_sp)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, param)
+    self.safety.init_tests()
+    self.safety.set_mads_params(True, False, False)
+    self._t = 0.0  # init_tests zeroes the panda clock; _advance tracks it from there
+
+  def tearDown(self):
+    self.safety.set_current_safety_param_sp(0)
+    self.safety.set_mads_params(False, False, False)
+
+  def _laneinfo(self, lane_lines, bus=2):
+    return self.packer.make_can_msg_safety("CAM_LANEINFO", bus, {"LANE_LINES": lane_lines})
+
+  def _feed(self, lane_lines, count=1, bus=2):
+    for _ in range(count):
+      self.safety.safety_rx_hook(self._laneinfo(lane_lines, bus))
+
+  def test_the_first_read_only_seeds_the_baseline(self):
+    # a drive that starts with lane keep on must not request lateral before the driver asks
+    self._feed(2, count=4)
+    self.assertEqual(0, self.safety.get_mads_button_press())  # NOT_PRESSED
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_the_on_press_re_arms_a_dropped_lateral(self):
+    # the feature: after the heartbeat check drops lateral, the on-press must re-arm it
+    self._feed(2, count=2)
+    self.safety.set_controls_allowed_lateral(True)
+    self._feed(0, count=2)
+    self.assertEqual(0, self.safety.get_mads_button_press())
+    self.safety.set_controls_allowed_lateral(False)  # what the heartbeat check does
+
+    self._feed(2, count=2)  # debounced: the second agreeing frame is the press
+    self.assertEqual(1, self.safety.get_mads_button_press())  # PRESSED
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_the_press_is_released_on_the_next_frame(self):
+    self._feed(2, count=2)
+    self._feed(0, count=2)
+    self._feed(2, count=2)
+    self.assertEqual(1, self.safety.get_mads_button_press())
+    self._feed(2)
+    self.assertEqual(0, self.safety.get_mads_button_press())
+
+  def test_a_single_glitched_frame_cannot_press(self):
+    # one zero frame between steady nonzero frames only moves the candidate, never presses
+    self._feed(2, count=2)
+    self.safety.set_controls_allowed_lateral(False)
+    self._feed(0)
+    self._feed(2)
+    self.assertEqual(0, self.safety.get_mads_button_press())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_a_lane_state_change_is_not_an_edge(self):
+    self._feed(2, count=2)
+    self.safety.set_controls_allowed_lateral(False)
+    self._feed(4, count=2)  # still lane keep on: lane state, not the button
+    self.assertEqual(0, self.safety.get_mads_button_press())
+    self._feed(1, count=2)
+    self.assertEqual(0, self.safety.get_mads_button_press())
+    self._feed(0, count=2)
+    self._feed(1, count=2)
+    self.assertEqual(1, self.safety.get_mads_button_press())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def test_the_main_bus_is_ignored(self):
+    # only the camera reports the lane state
+    self._feed(2, count=2)
+    self.safety.set_controls_allowed_lateral(False)
+    self._feed(0, count=2, bus=0)
+    self._feed(2, count=2, bus=0)
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_an_undeclared_car_never_checks_the_hud_frame(self):
+    # undeclared: the frame never arrives, the clock runs past the 10 s window, and controls
+    # stay allowed because the entry is not in the config at all
+    self._init(lka_button=False)
+    for seconds in (1, 10, 20):
+      with self.subTest(after=self._t / 1e6 + seconds):
+        self._advance(seconds, laneinfo=False)
+        self.assertTrue(self.safety.get_controls_allowed())
+        self.assertTrue(self.safety.safety_config_valid())
+
+  def test_a_declared_car_does_require_the_hud_frame(self):
+    # the other half: declared, the frame is checked, so its absence is caught
+    self._init()
+    self._advance(11, laneinfo=False)
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertFalse(self.safety.safety_config_valid())
+
+  def test_an_undeclared_car_reads_no_toggle(self):
+    self._init(lka_button=False)
+    self._feed(2, count=2)
+    self._feed(0, count=2)
+    self._feed(2, count=2)
+    self.assertEqual(-1, self.safety.get_mads_button_press())  # UNAVAILABLE
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_both_declarations_at_once_leave_the_physical_button_in_charge(self):
+    # the interface passes one safety param, but if both arrive the param read resolves it:
+    # the dash read must be inert and its liveness check gone, not just one of the two
+    self._init(tja_button=True, lka_button=True)
+    self._feed(2, count=2)
+    self._feed(0, count=2)
+    self._feed(2, count=2)
+    self.assertEqual(-1, self.safety.get_mads_button_press())  # UNAVAILABLE: the dash read is inert
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+    # and the HUD frame is not a liveness input for this car
+    self._advance(20, laneinfo=False)
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.safety_config_valid())
+
+  def test_the_toggle_works_under_openpilot_longitudinal(self):
+    self._init(param=MazdaSafetyFlags.LONG | MazdaSafetyFlags.STEER_TO_ZERO_EPS)
+    self._feed(2, count=2)
+    self._feed(0, count=2)
+    self.safety.set_controls_allowed_lateral(False)
+    self._feed(2, count=2)
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+  def _feed_every_rx_check(self, laneinfo=True):
+    # everything mazda_rx_checks requires, so a tick below is about the lag windows alone
+    msgs = [self.packer.make_can_msg_safety("CRZ_CTRL", 0, {}),
+            self.packer.make_can_msg_safety("CRZ_BTNS", 0, {}),
+            self.packer.make_can_msg_safety("STEER_TORQUE", 0, {}),
+            self.packer.make_can_msg_safety("ENGINE_DATA", 0, {}),
+            self.packer.make_can_msg_safety("PEDALS", 0, {})]
+    if laneinfo:
+      msgs.append(self._laneinfo(2))
+    for msg in msgs:
+      self.safety.safety_rx_hook(msg)
+
+  def _advance(self, seconds, laneinfo=True, step=0.5):
+    # run the clock forward re-feeding the rx-check messages, so only the withheld frame can age;
+    # controls are raised just before the tick so the assertion is about the tick alone.
+    end = self._t + (seconds * 1e6)
+    while self._t < end:
+      self._t = min(self._t + (step * 1e6), end)
+      self.safety.set_timer(int(self._t))
+      self._feed_every_rx_check(laneinfo=laneinfo)
+    self.safety.set_controls_allowed(True)
+    self.safety.set_controls_allowed_lateral(True)
+    self.safety.safety_tick_current_safety_config()
+
+  def test_a_healthy_tick_never_drops_controls(self):
+    # a declaration under 10 Hz without ignore_frequency_check is invalid on every tick,
+    # whatever the traffic; safety_config_valid() cannot see that flag, so assert controls
+    self._advance(0.1)  # 100 ms: nothing can be lagging
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self.assertTrue(self.safety.safety_config_valid())
+
+  def test_the_hud_frame_is_never_the_binding_lag_window(self):
+    # measured 2 Hz, worst period ~1 s: the 10 s window is ten times the 1 s floor the
+    # rest sit on, so a camera hiccup must not disengage. Five seconds quiet stays inside it.
+    self._advance(1)
+    self.assertTrue(self.safety.safety_config_valid())
+    self.assertTrue(self.safety.get_controls_allowed())
+    self._advance(5, laneinfo=False)
+    self.assertTrue(self.safety.get_controls_allowed())
+
+
 class TestMazdaIgnition(unittest.TestCase):
   TX_MSGS: list = []
 

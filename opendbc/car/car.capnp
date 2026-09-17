@@ -204,6 +204,8 @@ struct CarState {
   lowSpeedAlert @56 :Bool;  # lost steering control due to a dynamic min steering speed
   blockPcmEnable @60 :Bool;  # whether to allow PCM to enable this frame
   carNotReady @61 :Bool;  # car is transiently refusing engagement, used to prevent a fault if engaged
+  lkaButtonOff @62 :Bool;  # stock lane keep is off at the dash LKA button
+  latBlocked @63 :Bool;  # EPS can't apply torque: standstill, LKA off, or the re-arm after a re-enable
 
   # cruise state
   cruiseState @10 :CruiseState;

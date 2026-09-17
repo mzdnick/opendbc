@@ -13,6 +13,11 @@
 #define MAZDA_TJA_BUTTON_BIT 11U
 // sunnypilot safety param: the TJA button is the MADS lateral switch
 #define MAZDA_PARAM_SP_TJA_BUTTON 1U
+// sunnypilot safety param: the dash LKA button is the MADS lateral switch
+#define MAZDA_PARAM_SP_LKA_BUTTON 2U
+// Lane-keep line count, low 3 bits of byte 1 (Motorola bits 10..8): 0 = dash button off, 1-4 = lane state.
+#define MAZDA_LANE_LINES_BYTE 1U
+#define MAZDA_LANE_LINES_MASK 0x07U
 #define MAZDA_RADAR_STATIC  0x499U
 #define MAZDA_RADAR_TRACK_1 0x361U
 #define MAZDA_RADAR_TRACK_2 0x362U
@@ -28,6 +33,8 @@
 // CAN bus numbers
 #define MAZDA_MAIN 0
 #define MAZDA_CAM  2
+
+#define MAZDA_LKAS_HUD_RX_CHECK {.msg = {{MAZDA_LKAS_HUD, MAZDA_CAM, 8, 1U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true, .ignore_frequency_check = true}, { 0 }, { 0 }}}
 
 #define MAZDA_PARAM_LONGITUDINAL 1U
 // Select the steer-to-zero EPS envelope from the firmware-derived interface flag.
@@ -49,6 +56,11 @@ static bool mazda_steer_to_zero_eps = false;
 static bool mazda_legacy_fw_eps = false;
 static uint32_t mazda_engage_btn_frames = 0U;
 static uint32_t mazda_cancel_context_frames = 0U;
+// Declared by the platform.
+static bool mazda_lka_button = false;
+static bool mazda_lka_on = false;
+static bool mazda_lka_candidate = false;
+static bool mazda_lka_read = false;
 
 // Pin replaced-radar traffic to captured stock patterns where possible.
 
@@ -200,6 +212,23 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
         }
       }
       brake_pressed = brake;
+    }
+  }
+
+  // LANE_LINES is the dash LKA button state (0 = off); only the on-press is reported.
+  // Two agreeing frames.
+  if (((int)msg->bus == MAZDA_CAM) && (msg->addr == MAZDA_LKAS_HUD) && mazda_lka_button) {
+    bool lka_on = (msg->data[MAZDA_LANE_LINES_BYTE] & MAZDA_LANE_LINES_MASK) != 0U;
+    if (lka_on != mazda_lka_candidate) {
+      mazda_lka_candidate = lka_on;
+      mads_button_press = MADS_BUTTON_NOT_PRESSED;
+    } else if (!mazda_lka_read) {
+      mazda_lka_read = true;
+      mazda_lka_on = lka_on;
+      mads_button_press = MADS_BUTTON_NOT_PRESSED;
+    } else {
+      mads_button_press = (lka_on && !mazda_lka_on) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
+      mazda_lka_on = lka_on;
     }
   }
 }
@@ -376,6 +405,9 @@ static bool mazda_fwd_hook(int bus_num, int addr) {
 static safety_config mazda_init(uint16_t param) {
   mazda_engage_btn_frames = 0U;
   mazda_cancel_context_frames = 0U;
+  mazda_lka_on = false;
+  mazda_lka_candidate = false;
+  mazda_lka_read = false;
 
   static const CanMsg MAZDA_TX_MSGS[] = {
     {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
@@ -419,6 +451,8 @@ static safety_config mazda_init(uint16_t param) {
     {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    // MUST STAY LAST (dropped by length when undeclared); no rate floor: 2 Hz road data, only disappearance faults (Toyota 0x365 opts out)
+    MAZDA_LKAS_HUD_RX_CHECK,
   };
 
   // CRZ_CTRL intentionally disappears after radar teardown.
@@ -427,16 +461,25 @@ static safety_config mazda_init(uint16_t param) {
     {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
     {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    // MUST STAY LAST (dropped by length when undeclared); no rate floor: 2 Hz road data, only disappearance faults (Toyota 0x365 opts out)
+    MAZDA_LKAS_HUD_RX_CHECK,
   };
 
   mazda_longitudinal = GET_FLAG(param, MAZDA_PARAM_LONGITUDINAL);
   mazda_steer_to_zero_eps = GET_FLAG(param, MAZDA_PARAM_STEER_TO_ZERO_EPS);
   mazda_legacy_fw_eps = GET_FLAG(param, MAZDA_PARAM_LEGACY_FW_EPS);
   mazda_tja_button = GET_FLAG(current_safety_param_sp, MAZDA_PARAM_SP_TJA_BUTTON);
+  // one lateral switch per car: the physical TJA button wins when both are declared
+  mazda_lka_button = GET_FLAG(current_safety_param_sp, MAZDA_PARAM_SP_LKA_BUTTON) && !mazda_tja_button;
   acc_main_on = false;
 
-  return mazda_longitudinal ? BUILD_SAFETY_CFG(mazda_long_rx_checks, MAZDA_LONG_TX_MSGS) :
-                              BUILD_SAFETY_CFG(mazda_rx_checks, MAZDA_TX_MSGS);
+  safety_config cfg = mazda_longitudinal ? BUILD_SAFETY_CFG(mazda_long_rx_checks, MAZDA_LONG_TX_MSGS) :
+                                          BUILD_SAFETY_CFG(mazda_rx_checks, MAZDA_TX_MSGS);
+  // the lag check has no opt-out, so a camera that may not send the HUD frame must not carry it
+  if (!mazda_lka_button) {
+    cfg.rx_checks_len -= 1;
+  }
+  return cfg;
 }
 
 const safety_hooks mazda_hooks = {

@@ -8,6 +8,7 @@ from opendbc.car.structs import CarParams
 from opendbc.car.docs_definitions import CarHarness, CarDocs, CarParts
 from opendbc.car.fw_query_definitions import FwQueryConfig, Request, StdQueries
 from opendbc.car.vin import Vin, is_valid_vin
+from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 Ecu = CarParams.Ecu
 
@@ -208,11 +209,13 @@ class CAR(Platforms):
     # This radar does not publish 0x361-0x366 tracks on bus 0.
     dbc_dict={Bus.pt: 'mazda_2017'},
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'KE'}, years={'C', 'D', 'E', 'F', 'G'},  # 2012-16
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_CX5 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-5 2017-21")],
     MazdaCarSpecs(mass=3655 * CV.LB_TO_KG, wheelbase=2.7, steerRatio=18.1),  # steer ratio from the 2022 CX-5: same rack hardware
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'KF'}, years={'H', 'J', 'K', 'L', 'M'},  # 2017-21
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_CX9 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-9 2016-20")],
@@ -220,26 +223,31 @@ class CAR(Platforms):
     # This radar does not publish 0x361-0x366 tracks on bus 0.
     dbc_dict={Bus.pt: 'mazda_2017'},
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'TC'}, years={'G', 'H', 'J', 'K', 'L'},  # 2016-20
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_3 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda 3 2017-18")],
     MazdaCarSpecs(mass=2875 * CV.LB_TO_KG, wheelbase=2.7, steerRatio=14.0),
     wmis={WMI.JAPAN_PASSENGER, WMI.MEXICO_PASSENGER}, chassis_codes={'BN'}, years={'H', 'J'},  # 2017-18
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_6 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda 6 2017-20")],
     MazdaCarSpecs(mass=3443 * CV.LB_TO_KG, wheelbase=2.83, steerRatio=15.5),
     wmis={WMI.JAPAN_PASSENGER}, chassis_codes={'GL'}, years={'H', 'J', 'K', 'L', 'M'},  # 2017-21
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_CX9_2021 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-9 2021-23", video="https://youtu.be/dA3duO4a0O4")],
     MazdaCarSpecs(mass=4409 * CV.LB_TO_KG, wheelbase=2.93, steerRatio=17.6),
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'TC'}, years={'M', 'N', 'P'},  # 2021-23
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_CX5_2022 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-5 2022-25")],
     MazdaCX5_2022CarSpecs(mass=3728 * CV.LB_TO_KG, wheelbase=2.698, steerRatio=18.1),  # 15.5 is factory spec; 18.1 from paramsd learner (2.9M samples)
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'KF'}, years={'N', 'P', 'R', 'S'},  # 2022-25
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_CX8_2023 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-8 2023")],
@@ -247,6 +255,7 @@ class CAR(Platforms):
     # specs stand in until a learned set exists. Japan-market cars carry a chassis number, not a VIN,
     # and Australian JM0 VINs have no model-year field, so it fingerprints by firmware alone.
     MAZDA_CX9_2021.specs,
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
 
 

@@ -43,11 +43,11 @@ class TestResumeButton:
     assert cc.stop_and_go.resume_unlatching, "the pulse must fire with the release"
 
 
-def cancel_frame(cc, cs, cancel, radar_was_silenced, stock_radar_alive):
+def cancel_frame(cc, cs, cancel, radar_was_silenced, stock_radar_alive, enabled=False, cruise_engaged=True, tja_button=0):
   cc.frame = 10  # off the 50-frame alert cadence, on the 10-frame cancel cadence
-  _, sends = step(cc, cs, long_active=False, enabled=False, accel=0., long_state=LongCtrlState.off, available=False,
-                  cruise_engaged=True, cancel=cancel, stock_radar_alive=stock_radar_alive, fsc_settled=False,
-                  radar_was_silenced=radar_was_silenced)
+  _, sends = step(cc, cs, long_active=False, enabled=enabled, accel=0., long_state=LongCtrlState.off, available=False,
+                  cruise_engaged=cruise_engaged, cancel=cancel, stock_radar_alive=stock_radar_alive, fsc_settled=False,
+                  radar_was_silenced=radar_was_silenced, tja_button=tja_button)
   return addrs(sends)
 
 
@@ -69,6 +69,57 @@ class TestCancelCarveOut:
     sent = cancel_frame(cc, cs, cancel=True, radar_was_silenced=True, stock_radar_alive=False)
     assert CRZ_BTNS in sent
 
-  def test_stock_longitudinal_cancel_unaffected(self, stock_cc, stock_cs):
+  def test_stock_longitudinal_never_joined_is_not_canceled(self, stock_cc, stock_cs):
+    # the feature: ACC with the LKA button off, openpilot fully out
+    for _ in range(3):
+      sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+      assert CRZ_BTNS not in sent, "CANCELed a cruise openpilot never joined"
+
+  def test_stock_longitudinal_joined_cruise_still_canceled(self, stock_cc, stock_cs):
+    # once openpilot has been enabled on the engagement, a later disengage cancels as before
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, enabled=True)
     sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+    assert CRZ_BTNS in sent
+
+  def test_the_latch_resets_at_cruise_idle(self, stock_cc, stock_cs):
+    # the suppressed engagement ends; the next engagement is again the driver's until
+    # openpilot joins it
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, cruise_engaged=False)
+    sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+    assert CRZ_BTNS not in sent
+
+
+class TestTjaHandBack:
+  """The declared TJA button turns MADS lateral off with a press stock treats as lane-centering
+  only: MRCC never disarms for it. The disable the press triggers must hand the joined cruise
+  run back to the driver, the same protection a never-joined run already has."""
+
+  def test_the_press_hands_the_joined_cruise_back(self, stock_cc, stock_cs):
+    # MADS ran on the engagement, then the driver pressed TJA: through the press window and
+    # past it, the cruise underneath stays theirs. The press cycle still reads CC.enabled,
+    # so the clear must land before the disable does.
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, enabled=True)
+    for _ in range(2):
+      sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True,
+                          enabled=True, tja_button=1)
+      assert CRZ_BTNS not in sent
+    for _ in range(2):
+      sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+      assert CRZ_BTNS not in sent, "CANCELed the cruise the TJA press handed back"
+
+  def test_re_engaging_re_arms_the_sync_cancel(self, stock_cc, stock_cs):
+    # the protection belongs to the press, not to the car: joining the same cruise again
+    # brings the desync cancel back
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, enabled=True)
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, tja_button=1)
+    cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True, enabled=True)
+    sent = cancel_frame(stock_cc, stock_cs, cancel=True, radar_was_silenced=False, stock_radar_alive=True)
+    assert CRZ_BTNS in sent
+
+  def test_alpha_long_still_cancels_through_the_press(self, cc, cs):
+    # under alpha-long the engagement is openpilot's own, so the lateral-only disable is a
+    # desync and cancels, the same split as the never-joined latch
+    cancel_frame(cc, cs, cancel=True, radar_was_silenced=True, stock_radar_alive=False, enabled=True)
+    sent = cancel_frame(cc, cs, cancel=True, radar_was_silenced=True, stock_radar_alive=False, tja_button=1)
     assert CRZ_BTNS in sent

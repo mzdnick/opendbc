@@ -8,6 +8,7 @@ from opendbc.car.structs import CarParams
 from opendbc.car.docs_definitions import CarHarness, CarDocs, CarParts
 from opendbc.car.fw_query_definitions import FwQueryConfig, Request, StdQueries
 from opendbc.car.vin import Vin, is_valid_vin
+from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 Ecu = CarParams.Ecu
 
@@ -240,6 +241,7 @@ class CAR(Platforms):
     [MazdaCarDocs("Mazda CX-5 2022-25")],
     MazdaCX5_2022CarSpecs(mass=3728 * CV.LB_TO_KG, wheelbase=2.698, steerRatio=18.1),  # 15.5 is factory spec; 18.1 from paramsd learner (2.9M samples)
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'KF'}, years={'N', 'P', 'R', 'S'},  # 2022-25
+    sp_flags=MazdaFlagsSP.LKA_BUTTON,
   )
   MAZDA_CX8_2023 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-8 2023")],

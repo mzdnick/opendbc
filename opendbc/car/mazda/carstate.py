@@ -65,9 +65,13 @@ class CarState(CarStateBase, CarStateExt):
     self.resume_button = 0
     self.main_button = 0
     self.tja_button = 0
+    # Active-low wheel MRCC master (CRZ_BTNS.BIT1), read from the bus-0 parser: a 0 is a press.
+    self.mrcc_button = 0
 
     self.cruise_available = False
     self.cruise_enabled = False
+    # Unfiltered PEDALS cruise state; the filtered public state bridges brake dropouts.
+    self.mrcc_armed_raw = False
     self.cruise_enabled_blocked = True
     self.brake_pressed_prev = False
     self.stock_radar_silent_frames = 0
@@ -82,6 +86,9 @@ class CarState(CarStateBase, CarStateExt):
     self.cancel_context_frames = 0
     self.cam_laneinfo_seen = False
     self.cam_laneinfo_silent_frames = 0
+    # The camera's last CAM_LANEINFO payload and its staleness, for the white-wheel HUD gate.
+    self.cam_laneinfo_raw: bytes | None = None
+    self.cam_laneinfo_stale_frames = CAM_LANEINFO_FRESH_FRAMES
     self.cam_empty_seen = False
     self.radar_session_refused = False
     self.radar_session_response = 0
@@ -96,6 +103,10 @@ class CarState(CarStateBase, CarStateExt):
   @property
   def stock_radar_alive(self) -> bool:
     return self.stock_radar_seen and self.stock_radar_silent_frames < STOCK_RADAR_ALIVE_FRAMES
+
+  @property
+  def cam_laneinfo_live(self) -> bool:
+    return self.cam_laneinfo_raw is not None and self.cam_laneinfo_stale_frames < CAM_LANEINFO_FRESH_FRAMES
 
   @property
   def stock_radar_gone(self) -> bool:
@@ -225,11 +236,14 @@ class CarState(CarStateBase, CarStateExt):
     ret.stockFcw = (self.cam_empty_seen and cam_empty["STATUS"] != 0x7F) or \
                    ped["PED_WARNING"] == 1 or ped["BRAKE_WARNING"] == 1
 
+    acc_armed = cp.vl["PEDALS"]["ACC_OFF"] == 1
+    acc_active = cp.vl["PEDALS"]["ACC_ACTIVE"] == 1
+    # Unfiltered, both longitudinal modes: the white-wheel HUD gate reads it.
+    self.mrcc_armed_raw = acc_armed or acc_active
+
     if self.CP.openpilotLongitudinalControl:
       # After radar teardown, derive cruise state from PEDALS. Hold the previous state through
       # brake-only samples where both cruise bits are transiently low.
-      acc_armed = cp.vl["PEDALS"]["ACC_OFF"] == 1
-      acc_active = cp.vl["PEDALS"]["ACC_ACTIVE"] == 1
       brake_free = not ret.brakePressed and not self.brake_pressed_prev
       # Retain wheel-cancel context until PEDALS reflects the main-state change.
       if cp.vl["CRZ_BTNS"]["CAN_OFF"] == 1:
@@ -360,6 +374,8 @@ class CarState(CarStateBase, CarStateExt):
     self.cancel_button = cp.vl["CRZ_BTNS"]["CAN_OFF"]
     self.resume_button = cp.vl["CRZ_BTNS"]["RES"]
     self.main_button = int(cp.vl["CRZ_BTNS"]["MODE_X"] == 1 and cp.vl["CRZ_BTNS"]["MODE_Y"] == 1)
+    # BIT1 is active-low: a 0 on the bus-0 parser is the wheel's MRCC master press.
+    self.mrcc_button = int(cp.vl["CRZ_BTNS"]["BIT1"] == 0)
     # Only a car declared to have the physical TJA button reports it as the MADS switch.
     self.tja_button = int(cp.vl["CRZ_BTNS"]["TJA_BUTTON"] == 1) if self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON else 0
 

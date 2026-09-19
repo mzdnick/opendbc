@@ -46,6 +46,9 @@ class CarControllerParams:
   TJA_PRESS_MAX = 3
   # The one-shot warning after the third press is a pulse; the alert's own duration shows it.
   STOCK_CTS_ALERT_T = 0.1
+  # The radar's close-warning marker length: the dash renders the CRZ_CTRL marker bytes
+  # (byte5 0x18 + byte6 0x07) for this long. Stock capture, device-validated.
+  BRAKE_ALERT_HOLD_T = 0.38
 
   # Stock body-latched releases use a nine-frame RESUME_UNLATCHING pulse.
   RESUME_UNLATCH_LATCHED_T = 0.18  # s, 9 wire frames, the latched-family mode

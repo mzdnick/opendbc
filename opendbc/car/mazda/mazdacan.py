@@ -65,7 +65,7 @@ def create_acc_command(packer, bus, counter, accel, *, long_active, acc_availabl
 
 
 def create_crz_ctrl(packer, bus, long_active, acc_available, gap_setting, radar_has_lead, stop_go_phase, acc_active_2,
-                    *, hbc_armed=False):
+                    *, hbc_armed=False, brake_alert=False):
   # CRZ_CTRL replaces radar cruise state and mirrors stop phase and driver gap selection.
   # NEW_SIGNAL_3 (bit 13) mirrors the camera's HBC-arming bit (0x440 BIT2), matching stock;
   # the dash's green HBC light follows it.
@@ -81,6 +81,10 @@ def create_crz_ctrl(packer, bus, long_active, acc_available, gap_setting, radar_
     "ACC_ACTIVE_2": int(acc_active_2),
     "NEW_SIGNAL_3": int(hbc_armed),
   }
+  if brake_alert:
+    # The radar's own close-warning marker, byte pattern 0x18/0x07. Device-validated: the
+    # dash renders these bytes as BRAKE from our frames; hold for BRAKE_ALERT_HOLD_T.
+    values.update({"BRAKE_ALERT_A": 3, "BRAKE_ALERT_B": 7})
   return packer.make_can_msg("CRZ_CTRL", bus, values)
 
 
@@ -196,7 +200,8 @@ def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool)
     "S1_HBEAM",
   ]}
   values.update({
-    # TODO: what's the difference between all these? do we need to send all?
+    # One display command, device-tested: the dash warns only when the 0b111 field and both
+    # singles go together; every subset is silent, and dropping any one piece suppresses it.
     "HANDS_WARN_3_BITS": 0b111 if steer_required else 0,
     "HANDS_ON_STEER_WARN": steer_required,
     "HANDS_ON_STEER_WARN_2": steer_required,

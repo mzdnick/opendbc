@@ -174,6 +174,9 @@ class MazdaFlags(IntFlag):
   # param (opendbc/sunnypilot/car/interfaces.py), until a moving handover is on record for a
   # radar firmware and this can become a fingerprint rule.
   MOVING_TAKEOVER = 16
+  # Export CX-9 PCM family whose CRZ_SPEED scale differs from the shared Mazda DBC; see
+  # PXM7_CRUISE_SPEED_PCM_FW_PREFIX below.
+  PXM7_CRUISE_SPEED = 32
 
 
 class MazdaSafetyFlags(IntFlag):
@@ -274,6 +277,13 @@ SUPPORTED_PLATFORMS = STEER_TO_ZERO_PLATFORMS | {CAR.MAZDA_CX9_2021}
 G46L_RADAR_FW = {
   b'G46L-67XA1-C',
 }
+
+# Engine PCM family whose CRZ_SPEED encoding differs from the shared Mazda DBC: 196 raw per
+# cluster km/h with a -96±2 raw offset, instead of 200 with -100. Eight real setpoints
+# (32-52 km/h) land integer on that scale and every 1 km/h cluster step is exactly 196 raw;
+# the 100 km/h point rests on the reporter's cluster reading. PXM4 CX-9s read correctly on
+# the shared scale; no other PXM7 part number has been observed.
+PXM7_CRUISE_SPEED_PCM_FW_PREFIX = b'PXM7-188K2-'
 
 
 class Buttons:

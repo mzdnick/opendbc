@@ -6,7 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 
 carstate through the real CarInterface and its parsers: the FSC settle gate, stockFcw, the
 radar session response, GEAR.BRAKE_HOLD, the two-master guard, the speed sign unit, cancel
-under braking, cruiseState.standstill and the LKAS non-delivery latch.
+under braking, cruiseState.standstill, the PXM7 cruise set-speed rescale and the LKAS
+non-delivery latch.
 """
 import pytest
 
@@ -16,13 +17,14 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.carstate import CAM_LANEINFO_FRESH_FRAMES, STOCK_CTS_ALERT_FRAMES
 from opendbc.car.mazda.tests.conftest import car_interface, packer
-from opendbc.car.mazda.values import CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams
 from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 CAM_LANEINFO = 0x440
 CAM_EMPTY = 0x21d
 CAM_PEDESTRIAN = 0x25d
 CAM_TRAFFIC_SIGNS = 0x35f
+CRZ_EVENTS = 0x21f
 GEAR = 0x228
 RADAR_UDS_RESP = 0x76c
 
@@ -344,6 +346,84 @@ class TestSpeedSignLimit:
     for i in range(2):
       _, ret_sp = feed(CI, i, msg)
     assert ret_sp.speedLimit == 0.0
+
+
+Ecu = structs.CarParams.Ecu
+
+
+def _engine_fw(version):
+  fw = structs.CarParams.CarFw()
+  fw.ecu = Ecu.engine
+  fw.address = 0x7e0
+  fw.subAddress = 0
+  fw.fwVersion = version
+  return fw
+
+
+class TestCruiseSetSpeed:
+  """CRZ_SPEED decodes with the shared Mazda scale everywhere except CX-9s built on PXM7
+  PCMs, which encode 196 raw per cluster km/h with a -96±2 raw offset instead of 200 with
+  -100. Setpoint vectors are real frames from the reporting CX-9's route segments: four sit
+  exactly on the 196 grid, four sit a stable +2 raw above it (a ~0.01 kph encoder quirk, far
+  under the 1 km/h display step). The 100 km/h grid point (19504) rests on the reporter's
+  cluster reading and is not replayed here."""
+
+  REAL_SETPOINTS = [
+    (6176, 32),
+    (6568, 34),
+    (6764, 35),
+    (7352, 38),
+    (9510, 49),   # +2 raw off grid: decodes 49.0102
+    (9706, 50),
+    (9902, 51),
+    (10098, 52),
+  ]
+
+  @staticmethod
+  def _decode(candidate, raw, engine_fw=None):
+    car_fw = [_engine_fw(engine_fw)] if engine_fw is not None else []
+    CI = car_interface(alpha_long=False, candidate=candidate, car_fw=car_fw)
+    payload = raw.to_bytes(2, "big") + bytes(6)
+    ret = None
+    for i in range(2):
+      ret, _ = CI.update([(t_ns(i), [(CRZ_EVENTS, payload, 0)])])
+    return ret
+
+  @pytest.mark.parametrize(("raw", "cluster_kph"), REAL_SETPOINTS)
+  def test_pxm7_setpoints_match_the_cluster(self, raw, cluster_kph):
+    ret = self._decode(CAR.MAZDA_CX9_2021, raw, engine_fw=b'PXM7-188K2-E')
+    decoded_kph = ret.cruiseState.speed / CV.KPH_TO_MS
+    assert decoded_kph == pytest.approx((raw + 96) / 196, abs=1e-4)  # float32 storage
+    assert round(decoded_kph) == cluster_kph
+    # ICBM servos on speedCluster; it must carry the decoded value, not sit on the
+    # generic speed fallback in interfaces.py
+    assert ret.cruiseState.speedCluster == pytest.approx(ret.cruiseState.speed)
+
+  @pytest.mark.parametrize("engine_fw", [b'PXM7-188K2-D', b'PXM7-188K2-E', b'PXM7-188K2-F'])
+  def test_any_188k2_revision_selects_the_scale(self, engine_fw):
+    # only -E is route-observed; D and F are synthetic checks of the prefix gate
+    ret = self._decode(CAR.MAZDA_CX9_2021, 7352, engine_fw=engine_fw)
+    assert round(ret.cruiseState.speed / CV.KPH_TO_MS) == 38
+
+  @pytest.mark.parametrize("raw", [94, 100])
+  def test_cruise_off_stays_at_zero(self, raw):
+    # the PCM holds raw 94 while cruise is off; raw 100 is the shared-scale zero. Both must
+    # publish ~zero, not the ~1 kph the 196 scale would give.
+    ret = self._decode(CAR.MAZDA_CX9_2021, raw, engine_fw=b'PXM7-188K2-E')
+    assert abs(ret.cruiseState.speed / CV.KPH_TO_MS) < 0.05
+
+  @pytest.mark.parametrize("engine_fw", [b'PXM4-188K2-C', b'PXM4-188K2-D'])
+  def test_pxm4_cx9_keeps_the_shared_scale(self, engine_fw):
+    # corpus firmware strings; their decode itself has no route verification
+    ret = self._decode(CAR.MAZDA_CX9_2021, 7352, engine_fw=engine_fw)
+    assert ret.cruiseState.speed / CV.KPH_TO_MS == pytest.approx(7352 * 0.005 - 0.5)
+    assert ret.cruiseState.speedCluster == pytest.approx(ret.cruiseState.speed)
+
+  @pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9])
+  def test_the_firmware_alone_does_not_trip_the_scale(self, candidate):
+    # platform and firmware both gate; a PXM7 PCM string on another platform changes nothing
+    ret = self._decode(candidate, 7352, engine_fw=b'PXM7-188K2-E')
+    assert ret.cruiseState.speed / CV.KPH_TO_MS == pytest.approx(7352 * 0.005 - 0.5)
 
 
 class TestCancelUnderBraking:

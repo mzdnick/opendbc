@@ -6,7 +6,8 @@ from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
-from opendbc.car.mazda.values import DBC, G46L_RADAR_FW, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, SUPPORTED_PLATFORMS, MazdaFlags, \
+from opendbc.car.mazda.values import CAR, DBC, G46L_RADAR_FW, LKAS_LIMITS, PXM7_CRUISE_SPEED_PCM_FW_PREFIX, \
+  STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, SUPPORTED_PLATFORMS, MazdaFlags, \
   MazdaSafetyFlags, platform_from_vin
 
 
@@ -28,6 +29,14 @@ class CarInterface(CarInterfaceBase):
     if g46l_radar:
       ret.flags |= MazdaFlags.G46L_RADAR.value
     ret.radarUnavailable = Bus.radar not in DBC[candidate] or g46l_radar
+
+    # Export CX-9s built on PXM7 PCMs encode CRZ_SPEED on a 196-per-km/h grid instead of the
+    # shared 200; carstate rescales the decode so the published set speed matches the cluster.
+    # Platform and firmware both gate: the prefix alone must not move any other Mazda.
+    if candidate == CAR.MAZDA_CX9_2021 and any(
+      fw.ecu == 'engine' and fw.fwVersion.startswith(PXM7_CRUISE_SPEED_PCM_FW_PREFIX) for fw in car_fw
+    ):
+      ret.flags |= MazdaFlags.PXM7_CRUISE_SPEED.value
 
     # Every gen1 Mazda EPS is the same hardware; only the firmware differs. Steer-to-zero follows
     # the EPS firmware, so a donor-EPS swap carries it and older firmware in a 2022 body loses it.

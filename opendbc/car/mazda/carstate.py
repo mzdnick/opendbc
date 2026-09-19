@@ -303,7 +303,17 @@ class CarState(CarStateBase, CarStateExt):
     # PEDALS.STANDSTILL means wheels stopped, not ACC hold. Reporting it under openpilot
     # longitudinal would prevent LongControl from leaving its stopping state.
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1 and not self.CP.openpilotLongitudinalControl
-    ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
+    cruise_speed_kph = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"]
+    if self.CP.flags & MazdaFlags.PXM7_CRUISE_SPEED and cruise_speed_kph > 0:
+      # The shared DBC decodes CRZ_SPEED as raw / 200 - 0.5, which matches other Mazdas.
+      # PXM7 PCMs use (raw + 96) / 196 instead (exact to ±2 raw, ~0.01 km/h), which is
+      # this same rescale of the decoded value. The > 0 guard keeps the cruise-off state
+      # (raw 94/100) at zero instead of ~1 kph.
+      cruise_speed_kph = cruise_speed_kph * 50 / 49 + 1
+    ret.cruiseState.speed = cruise_speed_kph * CV.KPH_TO_MS
+    # ICBM servos on speedCluster; publish it directly so that coupling survives a real
+    # cluster-signal decode replacing the generic speed fallback in interfaces.py
+    ret.cruiseState.speedCluster = ret.cruiseState.speed
 
     # Stock LKAS must be active.
     # TODO: is this needed?

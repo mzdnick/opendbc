@@ -123,6 +123,30 @@ def test_crz_ctrl_golden_bytes(packer, long_active, acc_available, gap, has_lead
   assert dat.hex() == expected
 
 
+def test_crz_ctrl_marker_is_default_off(packer):
+  # the brake_alert kwarg must be a byte-exact no-op until a caller asks for the marker
+  args = (packer, 0, True, True, 2, True, 2, True)
+  assert mazdacan.create_crz_ctrl(*args, brake_alert=False)[1] == mazdacan.create_crz_ctrl(*args)[1]
+
+
+def test_crz_ctrl_marker_matches_the_stock_capture(packer):
+  # the radar's close-warning marker, byte5 0x18 + byte6 0x07; device-validated: the dash
+  # renders it as BRAKE from our frames, held for CarControllerParams.BRAKE_ALERT_HOLD_T
+  dat = mazdacan.create_crz_ctrl(packer, 0, True, True, 2, True, 2, True, brake_alert=True)[1]
+  assert dat[5] & 0x18 == 0x18 and dat[6] & 0x07 == 0x07
+
+
+def test_alert_command_hands_word_is_all_or_nothing(packer):
+  # device-tested across six pattern drives: the dash warns only on the whole word (the
+  # 0b111 field with both singles); every subset was silent, any one-bit drop suppresses
+  cam_msg = {"LINE_VISIBLE": 1, "LINE_NOT_VISIBLE": 0, "LANE_LINES": 2, "BIT1": 0,
+             "BIT2": 0, "BIT3": 0, "NO_ERR_BIT": 1, "ERR_BIT": 0, "S1": 0, "S1_HBEAM": 0}
+  on = parse_frame(CAM_LANEINFO, mazdacan.create_alert_command(packer, cam_msg, ldw=False, steer_required=True)[1])
+  assert on["HANDS_WARN_3_BITS"] == 0b111 and on["HANDS_ON_STEER_WARN"] == 1 and on["HANDS_ON_STEER_WARN_2"] == 1
+  off = parse_frame(CAM_LANEINFO, mazdacan.create_alert_command(packer, cam_msg, ldw=False, steer_required=False)[1])
+  assert off["HANDS_WARN_3_BITS"] == 0 and off["HANDS_ON_STEER_WARN"] == 0 and off["HANDS_ON_STEER_WARN_2"] == 0
+
+
 def test_radar_frames_match_stock():
   expected = [
     (0x499, "0008c00000000000"),

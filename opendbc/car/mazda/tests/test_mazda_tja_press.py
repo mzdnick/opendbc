@@ -166,6 +166,31 @@ class TestMrccUndo:
     again += drive(cc, cs, 40, available=True, mrcc_armed_raw=True)
     assert mrcc_off_frames(again) != []
 
+  def test_a_second_press_before_reconciliation_keeps_the_episode(self, alpha_long):
+    # a fast double-press: the second edge lands while the first press's arm is still
+    # live, so the "armed before the press" sample is the first press's artifact; the
+    # episode must survive and keep undoing, or MRCC stays armed until the driver clears it
+    cc, cs, _ = undo_episode(alpha_long)
+    released = drive(cc, cs, 10, available=True, mrcc_armed_raw=True)  # one press out, arm unreconciled
+    assert len(mrcc_off_frames(released)) == 1
+    again = drive(cc, cs, HOLD_CYCLES, available=True, mrcc_armed_raw=True, tja_button=1)  # second press
+    assert mrcc_off_frames(again) == []  # nothing while held
+    assert cc.mrcc_undo_pending  # not cancelled by the second edge
+    after = drive(cc, cs, 40, available=True, mrcc_armed_raw=True)
+    assert 0 < len(mrcc_off_frames(after)) <= 3  # the budget returned and undoes the second arm
+
+  def test_a_second_press_at_reconciliation_waits_for_its_own_arm(self, alpha_long):
+    # the first arm clears under the second press: PEDALS confirms the disarm inside the
+    # hold, and the second press's own arm lands only after the release; the episode must
+    # wait it out instead of standing down on the confirmed disarm
+    cc, cs, _ = undo_episode(alpha_long)
+    drive(cc, cs, 10, available=True, mrcc_armed_raw=True)
+    held = drive(cc, cs, HOLD_CYCLES, available=False, mrcc_armed_raw=False, tja_button=1)
+    assert mrcc_off_frames(held) == []
+    assert cc.mrcc_undo_pending  # waiting for this press's arm, not stood down
+    armed = drive(cc, cs, 40, available=True, mrcc_armed_raw=True)
+    assert 0 < len(mrcc_off_frames(armed)) <= 3
+
   def test_brake_dropout_does_not_end_the_episode(self, alpha_long):
     # both PEDALS cruise bits read low through a brake transition; the filtered state
     # bridges it, so three raw-off cycles stay under the five-frame confirmation

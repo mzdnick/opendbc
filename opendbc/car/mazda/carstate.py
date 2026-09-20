@@ -83,6 +83,7 @@ class CarState(CarStateBase, CarStateExt):
     self.cam_laneinfo_seen = False
     self.cam_laneinfo_silent_frames = 0
     self.cam_empty_seen = False
+    self.cam_settings_seen = False
     self.radar_session_refused = False
     self.radar_session_response = 0
     self.fsc_settled_frames = 0
@@ -305,9 +306,9 @@ class CarState(CarStateBase, CarStateExt):
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1 and not self.CP.openpilotLongitudinalControl
     ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
 
-    # Stock LKAS must be active.
-    # TODO: is this needed?
-    ret.invalidLkasSetting = cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
+    self.cam_settings_seen |= len(cp_cam.vl_all["CAM_SETTINGS"]["LKAS_INERVENTION_ON1"]) > 0
+    # Either bit set is an enabled setting
+    ret.invalidLkasSetting = self.cam_settings_seen and not any(cp_cam.vl["CAM_SETTINGS"][s] for s in ("LKAS_INERVENTION_ON1", "ILKAS_NTERVENTION_ON2"))
 
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:
@@ -387,6 +388,7 @@ class CarState(CarStateBase, CarStateExt):
     cam_messages = [
       # Read these optional camera messages without making them part of canValid.
       ("CAM_LANEINFO", float("nan")),
+      ("CAM_SETTINGS", float("nan")),
       ("CAM_TRAFFIC_SIGNS", float("nan")),
       ("CAM_EMPTY", float("nan")),
       ("CAM_PEDESTRIAN", float("nan")),

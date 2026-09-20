@@ -98,6 +98,20 @@ class CarControllerParams:
   ACCEL_WINDUP_LIMIT = 4.0 * DT_CTRL     # m/s2 per frame
   ACCEL_WINDDOWN_LIMIT = -10.0 * DT_CTRL  # m/s2 per frame, clips only the p99.9+ steps
 
+  # Rest the command inside the ECU's mushy zone instead of hunting across zero
+  # (tools/mazda_long/review_2026_09_coast). Stock dithers its steady command at +-0.07
+  # and realizes about half of anything commanded inside +-0.15, so 0.000 holds speed
+  # against drag and -0.10 coasts at about drag; meanwhile the plan flips its sign 20+
+  # times per minute on the very drives where the stock wire flips 0 to 4, and the port
+  # followed it 1:1. While the plan is quiet the command stays on the side of its last
+  # real move, clamped to stock's resting band: the accel side holds speed, the decel
+  # side coasts, and plan noise can no longer toggle throttle against brake.
+  ACCEL_COAST_ZONE = 0.12    # m/s2, plan magnitude that still counts as quiet
+  ACCEL_COAST_MIN = -0.10    # m/s2, decel-side rest floor, about drag on the wire
+  ACCEL_COAST_MAX = 0.07     # m/s2, accel-side rest ceiling, the top of stock's dither
+  ACCEL_COAST_MIN_SPEED = 2.5  # m/s, below this the creep and stop grammar owns the command
+  ACCEL_COAST_FLIP_T = 0.2   # s a move must persist before the resting side follows it
+
   def __init__(self, CP):
     # Every gen1 Mazda EPS runs the measured envelope; the interface sets one of the two bits.
     if CP.flags & MazdaFlags.EPS_HW:

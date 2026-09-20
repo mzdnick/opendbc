@@ -250,10 +250,16 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     mrcc_armed = raw_armed or (filtered_armed and not raw_off_confirmed)
 
     if CS.tja_button and not self.tja_button_prev:
-      # PEDALS can already show the press-induced arm in the same cycle as the edge; the
-      # previous stable sample is the state that existed before the press.
-      armed_before_press = self.mrcc_armed_prev if self.mrcc_armed_prev is not None else mrcc_armed
-      self.mrcc_undo_pending = not armed_before_press
+      # A press before the previous press's arm reconciled sees that arm as the "before"
+      # state; it is the press's own artifact, not the driver's baseline. The episode
+      # survives with its budget back and waits out the arm this press adds.
+      if self.mrcc_undo_pending:
+        self.mrcc_undo_frames = 0
+      else:
+        # PEDALS can already show the press-induced arm in the same cycle as the edge; the
+        # previous stable sample is the state that existed before the press.
+        armed_before_press = self.mrcc_armed_prev if self.mrcc_armed_prev is not None else mrcc_armed
+        self.mrcc_undo_pending = not armed_before_press
       self.mrcc_undo_saw_armed = False
       self.mrcc_arm_wait_frames = 0
     self.tja_button_prev = bool(CS.tja_button)

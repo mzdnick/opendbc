@@ -46,6 +46,9 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.accel_last = 0.
     self.release_ramp = None
     self.breakaway_frames = 0
+    # Coast detent state: 0 until the first real move of an engagement (values.py).
+    self.coast_side = 0
+    self.coast_streak = 0
     # The camera's own TJA/CTS is pressed off on its bus whenever it is armed, per arming
     # episode: the camera re-arms on the driver's own TJA press (that press is also the MADS
     # switch on declared cars) and drops its arm by itself at times.
@@ -280,6 +283,23 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         if self.accel_last > 0. and CC.actuators.accel >= 0.:
           # Lift the throttle at stock's rate; a brake request bypasses this above.
           accel = max(accel, self.accel_last + CarControllerParams.ACCEL_LIFT_LIMIT * DT_CTRL)
+        if not stopping and CS.out.vEgo > CarControllerParams.ACCEL_COAST_MIN_SPEED:
+          # Coast detent: while the plan is quiet the command rests on the side of its last
+          # real move, clamped to stock's dither band, so plan noise cannot toggle throttle
+          # against brake. A detent, not a snap: it engages only once the wire is already
+          # inside the band, so recoveries from real commands still transit at the slew
+          # limits, and the resting side follows only a move that persists.
+          if abs(CC.actuators.accel) >= CarControllerParams.ACCEL_COAST_ZONE:
+            self.coast_streak += 1
+            if self.coast_streak >= int(CarControllerParams.ACCEL_COAST_FLIP_T / DT_CTRL):
+              self.coast_side = 1 if CC.actuators.accel > 0. else -1
+          else:
+            self.coast_streak = 0
+            if self.coast_side != 0:
+              lo, hi = ((0., CarControllerParams.ACCEL_COAST_MAX) if self.coast_side > 0
+                        else (CarControllerParams.ACCEL_COAST_MIN, 0.))
+              if lo <= self.accel_last <= hi:
+                accel = float(np.clip(accel, lo, hi))
       if sm.car_has_hold:
         # Stop requesting brake hold after the body ECU takes ownership.
         accel = CarControllerParams.ACCEL_HOLD_LATCHED
@@ -290,6 +310,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         # Bound the latched release pulse to stock's command range.
         accel = min(max(accel, CarControllerParams.ACCEL_HOLD_LATCHED),
                     CarControllerParams.ACCEL_RESUME_PULSE_MAX)
+    else:
+      # Disengaged: re-arm the detent for the next engagement.
+      self.coast_side = 0
+      self.coast_streak = 0
     self.accel_last = accel
 
     if radar_master and self.frame % CarControllerParams.RADAR_STEP == 0:

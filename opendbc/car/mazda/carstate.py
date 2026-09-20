@@ -358,7 +358,10 @@ class CarState(CarStateBase, CarStateExt):
     ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
 
     self.cam_settings_seen |= len(cp_cam.vl_all["CAM_SETTINGS"]["LKAS_INERVENTION_ON1"]) > 0
-    ret.invalidLkasSetting = self.cam_settings_seen and not all(cp_cam.vl["CAM_SETTINGS"][s] for s in ("LKAS_INERVENTION_ON1", "ILKAS_NTERVENTION_ON2"))
+    # Either intervention bit is a live setting: cameras assert them unevenly (a
+    # TJA-fitted camera holds ON1 clear for a whole drive); only the settings-off
+    # state clears both.
+    ret.invalidLkasSetting = self.cam_settings_seen and not any(cp_cam.vl["CAM_SETTINGS"][s] for s in ("LKAS_INERVENTION_ON1", "ILKAS_NTERVENTION_ON2"))
 
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:

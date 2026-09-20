@@ -821,8 +821,12 @@ def test_intervention_bits_become_an_invalid_lkas_setting():
   # the flag holds through the silent cycles between the message's arrivals
   for i in range(2, 12):
     assert feed(CI, i)[0].invalidLkasSetting
-  mixed = pk.make_can_msg("CAM_SETTINGS", 2, {"LKAS_INERVENTION_ON1": 1, "ILKAS_NTERVENTION_ON2": 0})
-  assert feed(CI, 12, mixed)[0].invalidLkasSetting
+  # either bit alone is a live setting: cameras assert them unevenly, so the
+  # single-bit states must not read as off
+  on1_only = pk.make_can_msg("CAM_SETTINGS", 2, {"LKAS_INERVENTION_ON1": 1, "ILKAS_NTERVENTION_ON2": 0})
+  assert not feed(CI, 12, on1_only)[0].invalidLkasSetting
+  on2_only = pk.make_can_msg("CAM_SETTINGS", 2, {"LKAS_INERVENTION_ON1": 0, "ILKAS_NTERVENTION_ON2": 1})
+  assert not feed(CI, 13, on2_only)[0].invalidLkasSetting
 
 
 def test_cam_settings_absence_never_reads_as_off():

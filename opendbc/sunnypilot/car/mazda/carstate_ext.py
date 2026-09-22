@@ -32,3 +32,7 @@ class CarStateExt:
       ret_sp.speedLimit = float(speed_sign) * CV.KPH_TO_MS
     else:
       ret_sp.speedLimit = 0.0
+
+    # DBC bit 32: the displayed limit is camera-recognized, not nav-map based. Gated on a
+    # valid decoded limit so an implausible frame never reads as a camera confirmation.
+    ret_sp.speedLimitCamConfirmed = bool(sign["SPEED_SIGN_CAM"]) and ret_sp.speedLimit > 0.

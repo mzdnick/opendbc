@@ -345,6 +345,30 @@ class TestSpeedSignLimit:
       _, ret_sp = feed(CI, i, msg)
     assert ret_sp.speedLimit == 0.0
 
+  def test_camera_bit_flows_to_car_state(self):
+    """SPEED_SIGN_CAM marks the displayed limit as camera-recognized rather than nav-map
+    based. It must never read True without a valid decoded limit: the speed limit fallback
+    logic downstream trusts it as the freshness witness for the last camera value."""
+    CI = car_interface()
+    pack = packer()
+    msg = pack.make_can_msg("CAM_TRAFFIC_SIGNS", 2, {"SPEED_SIGN_UNIT": 1, "SPEED_SIGN": 40, "SPEED_SIGN_CAM": 1})
+    for i in range(2):
+      _, ret_sp = feed(CI, i, msg)
+    assert ret_sp.speedLimit == pytest.approx(40 * CV.MPH_TO_MS, rel=1e-6, abs=1e-12)
+    assert ret_sp.speedLimitCamConfirmed is True
+
+    msg = pack.make_can_msg("CAM_TRAFFIC_SIGNS", 2, {"SPEED_SIGN_UNIT": 1, "SPEED_SIGN": 40})
+    for i in range(2):
+      _, ret_sp = feed(CI, i, msg)
+    assert ret_sp.speedLimitCamConfirmed is False
+
+    # camera bit with nothing displayed: no confirmation without a value
+    msg = pack.make_can_msg("CAM_TRAFFIC_SIGNS", 2, {"SPEED_SIGN_UNIT": 0, "SPEED_SIGN": 0, "SPEED_SIGN_CAM": 1})
+    for i in range(2):
+      _, ret_sp = feed(CI, i, msg)
+    assert ret_sp.speedLimit == 0.0
+    assert ret_sp.speedLimitCamConfirmed is False
+
 
 class TestCancelUnderBraking:
   """The availability brake-hold exists for brake-only PEDALS samples that arrive with both

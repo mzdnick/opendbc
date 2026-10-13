@@ -8,17 +8,19 @@ openpilot never presses the TJA button. On the car's side it toggles MADS and ar
 camera's side it switches the car's own lane-keep setting off (CAM_SETTINGS), after which the
 EPS applies none of our request (route 7c735af5fce56485/00000105, 2026-09-12).
 
-The MRCC undo (zoompilot/opendbc#17): on a declared TJA car the physical press also arms MRCC in
-the body. When MRCC was off before the press, the controller answers with the wheel's own MRCC
-master press on bus 0 until raw PEDALS confirms the arm is gone; a pre-armed MRCC is the driver's
-and is left alone.
+The stock-TJA clear: every physical TJA press arms the camera's own TJA/CTS whatever the MRCC
+main does, and with cruise set the camera steers on while the panda holds its frames back
+(route 0000013b: 57 s blind, a dash camera fault). On a declared TJA car the controller answers
+with the wheel's own MRCC master press for as long as an armed camera and an armed main
+coexist. The condition is a level: no press memory, no arm-wait window, no frame budget.
 """
 import pytest
 
+from opendbc.car import DT_CTRL
 from opendbc.car.mazda.tests.conftest import CRZ_BTNS, SendButtonState, car_controller, frames, mazda_car_state, step
 from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
-HOLD_CYCLES = 15  # past the shared button pacing before the release
+DWELL = int(0.2 / DT_CTRL)  # the body-paced slot between clear presses, shared with ICBM
 
 
 def rig(alpha_long=False, tja_button=False):
@@ -32,21 +34,20 @@ def drive(cc, cs, cycles, **kwargs):
   sends = []
   for _ in range(cycles):
     sends.extend(step(cc, cs, **kwargs)[1])
+  for dat in frames(sends, CRZ_BTNS, bus=0):
+    assert not dat[1] & 0x08, "the TJA bit must never go to the car"
   return sends
+
+
+def live_condition(cc, cs, cycles, **kwargs):
+  """The clear condition held: camera steering, raw PEDALS armed, a quiet wheel."""
+  return drive(cc, cs, cycles, stock_tja=3, mrcc_armed_raw=True, **kwargs)
 
 
 def mrcc_off_frames(sends) -> list[bytes]:
   # the wheel's MRCC master press on the car's bus: exact shape, CTR the only variable bits
   return [d for d in frames(sends, CRZ_BTNS)
           if d[:3] == b"\x00\x81\xfe" and d[3] & 0xc3 == 0xc0 and d[4:] == bytes(4)]
-
-
-def undo_episode(alpha_long):
-  # cruise off before a TJA press-and-hold: the press-induced arm is live, undo pending
-  cc, cs = rig(alpha_long, tja_button=True)
-  drive(cc, cs, 5, available=False)
-  held = drive(cc, cs, HOLD_CYCLES, available=True, mrcc_armed_raw=True, tja_button=1)
-  return cc, cs, held
 
 
 class TestNoCameraPress:
@@ -64,137 +65,96 @@ class TestNoCameraPress:
 
 
 @pytest.mark.parametrize("alpha_long", [False, True])
-class TestMrccUndo:
+class TestStockTjaClear:
 
-  def test_off_before_press_undoes_the_arm(self, alpha_long):
-    cc, cs, held = undo_episode(alpha_long)
-    assert mrcc_off_frames(held) == []  # nothing while the driver holds the button
-    released = drive(cc, cs, 40, available=True, mrcc_armed_raw=True)
-    assert 0 < len(mrcc_off_frames(released)) <= 3  # the hold: at most the episode budget
-    settled = drive(cc, cs, 10, available=False)  # arm reconciled
-    assert mrcc_off_frames(settled) == []
-    assert not cc.mrcc_undo_pending
-    assert cc.mrcc_undo_frames == 0  # budget returned for the next press
-
-  @pytest.mark.parametrize("pre_armed", [True, False])
-  def test_the_drivers_own_arm_and_no_arm_are_left_alone(self, alpha_long, pre_armed):
-    # cruise already on before the press, or a press that never arms: no undo either way
+  @pytest.mark.parametrize("state", [2, 3, 4, 5])
+  def test_armed_camera_with_armed_main_clears(self, alpha_long, state):
+    # state 2 alone is enough: the rule fires on "camera armed + main armed" and never lets
+    # the pair survive to a press
     cc, cs = rig(alpha_long, tja_button=True)
-    drive(cc, cs, 5, available=pre_armed, mrcc_armed_raw=pre_armed)
-    sends = drive(cc, cs, HOLD_CYCLES, available=pre_armed, mrcc_armed_raw=pre_armed, tja_button=1)
-    sends += drive(cc, cs, 40, available=pre_armed, mrcc_armed_raw=pre_armed)
+    clearing = drive(cc, cs, DWELL + 1, stock_tja=state, mrcc_armed_raw=True)
+    assert len(mrcc_off_frames(clearing)) == 1
+
+  def test_the_condition_self_extinguishes(self, alpha_long):
+    # the main drops within a body beat of the first press; raw PEDALS then reads disarmed
+    # and the stream stops on its own
+    cc, cs = rig(alpha_long, tja_button=True)
+    live_condition(cc, cs, DWELL + 1)
+    settled = drive(cc, cs, 10, stock_tja=3, mrcc_armed_raw=False)
+    assert mrcc_off_frames(settled) == []
+
+  def test_camera_armed_with_main_disarmed_sends_nothing(self, alpha_long):
+    # the press did not arm the body, or a takeover already disarmed it: nothing to clear
+    cc, cs = rig(alpha_long, tja_button=True)
+    sends = drive(cc, cs, DWELL * 2, stock_tja=3, mrcc_armed_raw=False)
     assert mrcc_off_frames(sends) == []
 
-  def test_budget_caps_the_hold_and_returns_after_reconciliation(self, alpha_long):
-    cc, cs, _ = undo_episode(alpha_long)
-    stuck = drive(cc, cs, 80, available=True, mrcc_armed_raw=True)  # the arm never clears
-    assert len(mrcc_off_frames(stuck)) == 3
-    assert not cc.mrcc_undo_pending
-    drive(cc, cs, 10, available=False)  # reconciled: the budget is back
-    drive(cc, cs, 5, available=False)
-    again = drive(cc, cs, HOLD_CYCLES, available=True, mrcc_armed_raw=True, tja_button=1)
-    again += drive(cc, cs, 40, available=True, mrcc_armed_raw=True)
-    assert mrcc_off_frames(again) != []
-
-  def test_a_second_press_before_reconciliation_keeps_the_episode(self, alpha_long):
-    # a fast double-press: the second edge lands while the first press's arm is still
-    # live, so the "armed before the press" sample is the first press's artifact; the
-    # episode must survive and keep undoing, or MRCC stays armed until the driver clears it
-    cc, cs, _ = undo_episode(alpha_long)
-    released = drive(cc, cs, 10, available=True, mrcc_armed_raw=True)  # one press out, arm unreconciled
-    assert len(mrcc_off_frames(released)) == 1
-    again = drive(cc, cs, HOLD_CYCLES, available=True, mrcc_armed_raw=True, tja_button=1)  # second press
-    assert mrcc_off_frames(again) == []  # nothing while held
-    assert cc.mrcc_undo_pending  # not cancelled by the second edge
-    after = drive(cc, cs, 40, available=True, mrcc_armed_raw=True)
-    assert 0 < len(mrcc_off_frames(after)) <= 3  # the budget returned and undoes the second arm
-
-  def test_a_second_press_at_reconciliation_waits_for_its_own_arm(self, alpha_long):
-    # the first arm clears under the second press: PEDALS confirms the disarm inside the
-    # hold, and the second press's own arm lands only after the release; the episode must
-    # wait it out instead of standing down on the confirmed disarm
-    cc, cs, _ = undo_episode(alpha_long)
-    drive(cc, cs, 10, available=True, mrcc_armed_raw=True)
-    held = drive(cc, cs, HOLD_CYCLES, available=False, mrcc_armed_raw=False, tja_button=1)
-    assert mrcc_off_frames(held) == []
-    assert cc.mrcc_undo_pending  # waiting for this press's arm, not stood down
-    armed = drive(cc, cs, 40, available=True, mrcc_armed_raw=True)
-    assert 0 < len(mrcc_off_frames(armed)) <= 3
-
-  def test_brake_dropout_does_not_end_the_episode(self, alpha_long):
-    # both PEDALS cruise bits read low through a brake transition; the filtered state
-    # bridges it, so three raw-off cycles stay under the five-frame confirmation
-    cc, cs, _ = undo_episode(alpha_long)
-    drive(cc, cs, 3, available=True, mrcc_armed_raw=False)
-    assert cc.mrcc_undo_pending
-
-  def test_arm_clearing_stands_down_without_a_second_press(self, alpha_long):
-    # the undo's own press disarms the car ~80 ms before PEDALS confirms it; the raw gate
-    # and the 200 ms slot must hold the second press back, or it would re-arm the car
-    cc, cs, _ = undo_episode(alpha_long)
-    pressing = drive(cc, cs, 10, available=True, mrcc_armed_raw=True)  # one press out, arm still reflected
-    assert len(mrcc_off_frames(pressing)) == 1
-    clearing = drive(cc, cs, 40, available=False, mrcc_armed_raw=False)  # the arm clears mid-budget
-    assert mrcc_off_frames(clearing) == []
-    assert not cc.mrcc_undo_pending  # one press was enough: stood down without spending the budget
-
-  def test_no_arm_wait_is_bounded_and_brake_held(self, alpha_long):
-    # a car that never arms through the press: the undo stands down after 1 s brake-free
-    # and ICBM gets the button stream back; a held brake restarts the clock, since PEDALS
-    # cannot witness an arm under braking
+  def test_camera_disarmed_with_main_armed_sends_nothing(self, alpha_long):
+    # a restored main at boot (0000013b t=0.142) with a camera that never armed: the
+    # driver's own arm is not openpilot's to drop
     cc, cs = rig(alpha_long, tja_button=True)
-    drive(cc, cs, 5, available=False)
-    drive(cc, cs, HOLD_CYCLES, available=False, tja_button=1)
-    drive(cc, cs, 60, available=False)  # brake-free wait, still inside 1 s
-    assert cc.mrcc_undo_pending
-    held = drive(cc, cs, 100, available=False, brake_pressed=True, send_button=SendButtonState.increase)
-    assert cc.mrcc_undo_pending  # the brake restarts the clock
-    assert frames(held, CRZ_BTNS, bus=0) == []  # ICBM still suppressed while the undo owns the stream
+    sends = drive(cc, cs, DWELL * 2, stock_tja=0, mrcc_armed_raw=True)
+    assert mrcc_off_frames(sends) == []
+
+  @pytest.mark.parametrize("button", ["tja_button", "mrcc_button", "cancel_button", "resume_button",
+                                      "accel_button", "decel_button", "distance_button",
+                                      "distance_more_button"])
+  def test_a_held_wheel_button_waits(self, alpha_long, button):
+    # one CRZ_BTNS source at a time; the condition outlives the hold and finishes the clear
+    cc, cs = rig(alpha_long, tja_button=True)
+    held = drive(cc, cs, DWELL * 2, stock_tja=3, mrcc_armed_raw=True, **{button: 1})
+    assert mrcc_off_frames(held) == []
+    after = live_condition(cc, cs, DWELL + 1)
+    assert len(mrcc_off_frames(after)) >= 1  # the clear resumes
+
+  @pytest.mark.parametrize("activity", [dict(cancel=True), dict(resume=True)])
+  def test_openpilot_cancel_and_resume_wait(self, alpha_long, activity):
+    # openpilot's own button frames own the stream; the clear resumes when they fall
+    cc, cs = rig(alpha_long, tja_button=True)
+    waiting = drive(cc, cs, DWELL * 2, stock_tja=3, mrcc_armed_raw=True, **activity)
+    assert mrcc_off_frames(waiting) == []
+    after = live_condition(cc, cs, DWELL + 1)
+    assert len(mrcc_off_frames(after)) >= 1  # the clear resumes
+
+  def test_stock_ecu_handback_waits(self, alpha_long):
+    cc, cs = rig(alpha_long, tja_button=True)
+    held = drive(cc, cs, DWELL * 2, stock_tja=3, mrcc_armed_raw=True, handback=True)
+    assert mrcc_off_frames(held) == []
+    after = live_condition(cc, cs, DWELL + 1)
+    assert len(mrcc_off_frames(after)) >= 1  # the clear resumes
+
+  def test_the_dwell_paces_the_stream(self, alpha_long):
+    # one press per body-paced slot: 2 * DWELL + 1 cycles hold the condition, two presses land
+    cc, cs = rig(alpha_long, tja_button=True)
+    sends = live_condition(cc, cs, DWELL * 2 + 1)
+    assert len(mrcc_off_frames(sends)) == 2
+
+  def test_a_sustained_condition_never_stops_sending(self, alpha_long):
+    # no frame budget: a body that ignores the press sees a held physical button, which the
+    # body tolerates at 10 Hz, not a count that runs out
+    cc, cs = rig(alpha_long, tja_button=True)
+    sends = live_condition(cc, cs, DWELL * 15)
+    # frames 0 through DWELL * 15 - 1: one press every slot from the first
+    assert len(mrcc_off_frames(sends)) == (DWELL * 15 - 1) // DWELL
+
+  def test_icbm_yields_the_stream_while_the_condition_holds(self, alpha_long):
+    cc, cs = rig(alpha_long, tja_button=True)
+    live = drive(cc, cs, DWELL * 2, stock_tja=3, mrcc_armed_raw=True,
+                 send_button=SendButtonState.increase)
+    # the only CRZ_BTNS traffic while live is the clear press itself; ICBM stays quiet
+    assert frames(live, CRZ_BTNS, bus=0) == mrcc_off_frames(live)
+    assert len(mrcc_off_frames(live)) >= 1
     resumed = drive(cc, cs, 110, available=False, send_button=SendButtonState.increase)
-    assert not cc.mrcc_undo_pending  # 1 s brake-free elapsed
     assert frames(resumed, CRZ_BTNS, bus=0) != []  # ICBM has the stream back
 
-  @pytest.mark.parametrize("activity", [dict(mrcc_button=1), dict(cancel_button=1), dict(accel_button=1),
-                                        dict(handback=True)])
-  def test_driver_activity_aborts(self, alpha_long, activity):
-    # the driver's own cruise presses and a stock ECU hand-back all stand down at once
-    cc, cs, _ = undo_episode(alpha_long)
-    drive(cc, cs, 30, available=True, mrcc_armed_raw=True, **activity)
-    assert not cc.mrcc_undo_pending
 
-  def test_openpilot_cancel_waits_then_resumes(self, alpha_long):
-    cc, cs, _ = undo_episode(alpha_long)
-    waiting = drive(cc, cs, 20, available=True, mrcc_armed_raw=True, cancel=True)
-    assert mrcc_off_frames(waiting) == []  # no frame races openpilot's own cancel
-    assert cc.mrcc_undo_pending  # waited out, not aborted
-    resumed = drive(cc, cs, 30, available=True, mrcc_armed_raw=True)
-    assert 0 < len(mrcc_off_frames(resumed)) <= 3
+class TestRadarHandbackWaits:
 
-
-class TestMrccUndoShipsDark:
-
-  def test_radar_handback_aborts_with_the_budget_frozen(self):
-    # under alpha-long the session manager owns radar_handback_active and overwrites a
-    # seeded flag, so the abort runs on a stock-long controller
-    cc, cs, _ = undo_episode(alpha_long=False)
-    drive(cc, cs, 3, available=True, mrcc_armed_raw=True)  # episode live, at most one frame out
-    spent = cc.mrcc_undo_frames
-    sends = drive(cc, cs, 30, available=True, mrcc_armed_raw=True, radar_handback_active=True)
-    assert not cc.mrcc_undo_pending
-    assert cc.mrcc_undo_frames == spent  # aborted, not budget-exhausted
-    assert mrcc_off_frames(sends) == []
-
-  def test_undeclared_button_never_sends(self):
-    cc, cs = rig()
-    drive(cc, cs, 5, available=False)
-    drive(cc, cs, HOLD_CYCLES, available=True, mrcc_armed_raw=True, tja_button=1)
-    sends = drive(cc, cs, 60, available=True, mrcc_armed_raw=True)
-    assert mrcc_off_frames(sends) == []
-    assert not cc.mrcc_undo_pending
-
-  def test_icbm_suppressed_through_the_hold(self):
-    cc, cs = rig(tja_button=True)
-    held = drive(cc, cs, HOLD_CYCLES, available=True, mrcc_armed_raw=True, tja_button=1,
-                 send_button=SendButtonState.increase)
-    # the wheel owns the counter stream during the hold: ICBM stays quiet too
-    assert frames(held, CRZ_BTNS, bus=0) == []
+  def test_radar_handback_waits(self):
+    # under alpha-long the session manager owns radar_handback_active and overwrites a seeded
+    # flag, so the wait runs on a stock-long controller
+    cc, cs = rig(alpha_long=False, tja_button=True)
+    held = drive(cc, cs, DWELL * 2, stock_tja=3, mrcc_armed_raw=True, radar_handback_active=True)
+    assert mrcc_off_frames(held) == []
+    after = live_condition(cc, cs, DWELL + 1)
+    assert len(mrcc_off_frames(after)) >= 1  # the clear resumes

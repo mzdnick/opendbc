@@ -29,6 +29,9 @@ def rig(alpha_long=False, tja_button=False):
 
 
 def drive(cc, cs, cycles, **kwargs):
+  # These scenarios are the Mads-on world the declared button exists for; the gate test
+  # below passes mads_available=False to stage the stock-behavior door.
+  kwargs.setdefault("mads_available", True)
   sends = []
   for _ in range(cycles):
     sends.extend(step(cc, cs, **kwargs)[1])
@@ -70,6 +73,18 @@ class TestMrccUndo:
     sends = drive(cc, cs, HOLD_CYCLES, available=pre_armed, mrcc_armed_raw=pre_armed, tja_button=1)
     sends += drive(cc, cs, 40, available=pre_armed, mrcc_armed_raw=pre_armed)
     assert mrcc_off_frames(sends) == []
+
+  def test_mads_toggle_off_leaves_the_stock_arm(self, alpha_long):
+    # with the Mads toggle off the declared button is not ours: the press-induced stock arm
+    # stays, and no undo episode starts
+    cc, cs = rig(alpha_long, tja_button=True)
+    drive(cc, cs, 5, available=False, mads_available=False)
+    held = drive(cc, cs, HOLD_CYCLES, available=True, mrcc_armed_raw=True, tja_button=1, mads_available=False)
+    assert mrcc_off_frames(held) == []
+    released = drive(cc, cs, 40, available=True, mrcc_armed_raw=True, mads_available=False)
+    assert mrcc_off_frames(released) == []
+    assert not cc.mrcc_undo_pending
+    assert cc.mrcc_undo_frames == 0
 
   def test_budget_caps_the_hold_and_returns_after_reconciliation(self, alpha_long):
     cc, cs, _ = undo_episode(alpha_long)

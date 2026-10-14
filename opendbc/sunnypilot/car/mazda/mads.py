@@ -115,7 +115,9 @@ class MadsCarController:
     # ECU directly, so the button the driver declared as the lateral switch also arms cruise.
     # Answer with the driver's own MRCC master press until raw PEDALS confirms the arm is gone.
     can_sends = []
-    if not self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON:
+    if not self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON or not CC_SP.mads.available:
+      # With the Mads toggle off the declared button is not ours: the press is a plain stock
+      # arm, and undoing it would fight the driver who asked for stock behavior.
       return can_sends
 
     raw_armed = bool(CS.mrcc_armed_raw)

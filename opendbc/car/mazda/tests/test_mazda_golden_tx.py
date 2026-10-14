@@ -406,6 +406,8 @@ def run_stack(ci, phases, mads=False):
       sim.state.update({k: v for k, v in base.items() if k in sim.state})
       for i in range(n):
         kwargs = dict(STACK_CC, **{k: v for k, v in base.items() if k not in sim.state})
+        # CC_SP.mads.available mirrors the config's Mads state, as both come from one toggle on the car
+        kwargs.setdefault("mads_available", mads)
         for k, v in (per_frame(i, sim) if per_frame is not None else {}).items():
           if k in sim.state:
             sim.state[k] = v

@@ -144,13 +144,14 @@ def car_control(enabled=None, long_active=True, lat_active=False, accel=0.5, tor
 
 
 def car_control_sp(handback=False, lead_d_rel=12.0, lead_v_rel=0.0, send_button=SendButtonState.none,
-                    mads_active=False) -> structs.CarControlSP:
+                    mads_active=False, mads_available=False) -> structs.CarControlSP:
   cc_sp = structs.CarControlSP()
   cc_sp.stockEcuHandBack = handback
   cc_sp.leadOne.dRel = lead_d_rel
   cc_sp.leadOne.vRel = lead_v_rel
   cc_sp.intelligentCruiseButtonManagement.sendButton = send_button
   cc_sp.mads.active = mads_active
+  cc_sp.mads.available = mads_available
   return cc_sp
 
 

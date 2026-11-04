@@ -377,9 +377,7 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # camera signals
     self.cam_lkas = cp_cam.vl["CAM_LKAS"]
     self.cam_laneinfo = cp_cam.vl["CAM_LANEINFO"]
-    # The EPS's own fault. The camera's ERR_BIT_1 latches about 5 s after it on every real fault, and
-    # alone it is a transient (sun glare) the carcontroller keeps from the EPS
-    # (docs/zoompilot/mazda-lateral.md, "LKAS_FAULT and the camera's ERR_BIT_1").
+    # The EPS's own fault; the camera's ERR_BIT_1 follows it (docs/zoompilot/mazda-lateral.md).
     ret.steerFaultPermanent = cp.vl["STEER_RATE"]["LKAS_FAULT"] == 1
     self.hbc_request = cam_laneinfo_fresh and self.cam_laneinfo["BIT2"] == 1
 

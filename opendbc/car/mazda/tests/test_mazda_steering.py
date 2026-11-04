@@ -203,9 +203,7 @@ def test_carstate_undelivered_latch_zeroes_the_steer_command(stock_cc, stock_cs)
 
 @pytest.mark.parametrize("lat_active", [True, False])
 def test_camera_error_bits_never_reach_the_eps(stock_cc, stock_cs, lat_active):
-  # The EPS reads LKAS health from our 0x243 and stops assisting on the camera's error bits (000000b3
-  # seg 46: LKAS_BLOCK about 10 ms after our first frame carrying them). The panda only passes our frame
-  # while it blocks the camera's, so the bits are dropped in every frame; the rest stays mirrored.
+  # 000000b3 seg 46: LKAS_BLOCK about 10 ms after our first 0x243 carrying the camera's error bits.
   stock_cs.cam_lkas.update({"BIT_1": 1, "ERR_BIT_1": 1, "ERR_BIT_2": 1})
   _, sends = step(stock_cc, stock_cs, lat_active=lat_active, torque=0., long_active=False, enabled=True, v_ego=10.)
   v = parse_frame(CAM_LKAS, frame(sends, CAM_LKAS))

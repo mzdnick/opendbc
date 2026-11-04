@@ -153,12 +153,9 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
 
     can_sends.extend(self.update_hud(CC, CC_SP, CS))
 
-    # The EPS reads LKAS health from this frame, and the panda only passes it while it blocks the
-    # camera's own. Never forward the camera's error bits (sun glare): the EPS would stop assisting.
-    # carstate takes the permanent fault from the EPS's LKAS_FAULT instead.
-    steer_cam = {**CS.cam_lkas, "ERR_BIT_1": 0, "ERR_BIT_2": 0}
+    # send steering command
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
-                                                      self.frame, apply_torque, steer_cam))
+                                                      self.frame, apply_torque, CS.cam_lkas))
 
     # Suppress ICBM while cancel/resume is active or the MRCC cleanup owns CRZ_BTNS:
     # the wheel's press pattern owns the counter stream until release.

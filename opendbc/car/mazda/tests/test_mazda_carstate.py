@@ -14,7 +14,7 @@ from opendbc.car import Bus, DT_CTRL
 from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.carstate import ButtonType, LKAS_REARM_FRAMES, LKAS_REARM_FAULT_FRAMES
+from opendbc.car.mazda.carstate import ButtonType, CAM_LKAS_STALE_FRAMES, LKAS_REARM_FRAMES, LKAS_REARM_FAULT_FRAMES
 from opendbc.car.mazda.tests.conftest import car_interface, car_params, car_params_sp, packer
 from opendbc.car.mazda.values import CAR, CarControllerParams
 
@@ -849,13 +849,114 @@ def test_faulted_camera_is_not_the_las_switch():
   assert feed(CI, 0, (CAM_LANEINFO, las_off, 2))[0].invalidLkasSetting
   assert not feed(CI, 1, (CAM_LANEINFO, faulted, 2))[0].invalidLkasSetting
 
-  # CAM_LKAS ERR_BIT_1 alone (steerFaultPermanent) also marks the camera as faulted; same route's frames
+  # ERR_BIT_1 alone still marks the camera faulted for the LAS-switch veto (reads the raw bit)
+  # but no longer raises steerFaultPermanent on a clean EPS. Same route's frames.
   CI = car_interface(alpha_long=False)
   feed(CI, 0, (CAM_LKAS, bytes.fromhex("f8000960020000a7"), 2))
   feed(CI, 1, (CAM_LKAS, bytes.fromhex("08000960020000b6"), 2))
   ret = feed(CI, 2, (CAM_LANEINFO, las_off, 2))[0]
-  assert ret.steerFaultPermanent
+  assert not ret.steerFaultPermanent
   assert not ret.invalidLkasSetting
+
+
+class CameraFaultRig:
+  """Stock-long CX-5 2022 at road speed with cruise on, fed the three inputs the gate reads:
+  the camera's faulted 0x243, the EPS's STEER_RATE and wheel speed."""
+
+  def __init__(self, candidate=CAR.MAZDA_CX5_2022):
+    self.CI = car_interface(alpha_long=False, candidate=candidate)
+    self.packer = packer()
+    self.frame = 0
+    self.step()
+
+  def step(self, camera_fault=1, cruise_active=1, blocked=0, eps_fault=0, cam=True, speed_kph=40.):
+    self.frame += 1
+    msgs = []
+    if cam:
+      msgs.append(self.packer.make_can_msg("CAM_LKAS", 2, {"ERR_BIT_1": camera_fault, "ERR_BIT_2": camera_fault}))
+    msgs.append(self.packer.make_can_msg("CRZ_CTRL", 0, {"CRZ_ACTIVE": cruise_active}))
+    msgs.append(self.packer.make_can_msg("STEER_RATE", 0, {"LKAS_BLOCK": blocked, "LKAS_FAULT": eps_fault}))
+    msgs.append(self.packer.make_can_msg("WHEEL_SPEEDS", 0, {"FL": speed_kph, "FR": speed_kph, "RL": speed_kph, "RR": speed_kph}))
+    return feed(self.CI, self.frame, *msgs)[0]
+
+
+class TestCameraFaultSoftening:
+  """ERR_BIT_1 is permanent-fault evidence only when the EPS corroborates it; openpilot does
+  not use this camera. Corpus faults all followed an EPS LKAS_FAULT; the bit alone is sun
+  glare (000000b3 seg 46, unreg_0000001e seg 7). The gate ignores engagement."""
+
+  def test_soft_with_a_clean_eps(self):
+    rig = CameraFaultRig()
+    for _ in range(3):
+      ret = rig.step()
+      assert not ret.steerFaultPermanent
+      assert rig.CI.CS.camera_fault_soft
+
+  def test_soft_regardless_of_cruise_and_control(self):
+    # Engagement never gates this, so MADS lateral-only and long-only are covered.
+    rig = CameraFaultRig()
+    ret = rig.step(cruise_active=0)
+    assert not ret.steerFaultPermanent
+    assert rig.CI.CS.camera_fault_soft
+
+  def test_the_eps_block_restores_the_fault(self):
+    # A block at road speed is EPS evidence; this is the failure mode of dropping the mirrored bits.
+    rig = CameraFaultRig()
+    rig.step()
+    ret = rig.step(blocked=1)
+    assert ret.steerFaultPermanent
+    assert not rig.CI.CS.camera_fault_soft
+
+  def test_a_block_from_a_stop_is_not_fault_evidence(self):
+    # Glare at a red light: the standby block from the stop, held through the launch, does
+    # not end the soften.
+    rig = CameraFaultRig()
+    rig.step()
+    assert rig.CI.CS.camera_fault_soft
+    ret = rig.step(blocked=1, speed_kph=0.)
+    assert not ret.steerFaultPermanent
+    assert rig.CI.CS.camera_fault_soft
+    rig.step(blocked=1, speed_kph=30.)
+    assert rig.CI.CS.camera_fault_soft
+    rig.step(blocked=0)
+    ret = rig.step(blocked=1)
+    assert ret.steerFaultPermanent
+    assert not rig.CI.CS.camera_fault_soft
+
+  def test_an_untracked_origin_keeps_the_block_trusted(self):
+    # No origin tracking: None reads as trusted.
+    rig = CameraFaultRig(candidate=CAR.MAZDA_3)
+    rig.step()
+    ret = rig.step(blocked=1, speed_kph=0.)
+    assert ret.steerFaultPermanent
+    assert not rig.CI.CS.camera_fault_soft
+
+  def test_the_eps_fault_bit_restores_the_fault(self):
+    # The corpus class: the camera's bit trails an already-latched EPS LKAS_FAULT by 5.3 s.
+    rig = CameraFaultRig()
+    rig.step()
+    ret = rig.step(eps_fault=1)
+    assert ret.steerFaultPermanent
+    assert not rig.CI.CS.camera_fault_soft
+
+  def test_camera_recovery_clears_the_gate(self):
+    rig = CameraFaultRig()
+    rig.step()
+    ret = rig.step(camera_fault=0)
+    assert not ret.steerFaultPermanent
+    assert not rig.CI.CS.camera_fault_soft
+
+  def test_stream_loss_during_fault_restores_the_stock_reading(self):
+    # The parser holds the last ERR_BIT_1 through silence; a dead camera must not stay softened.
+    rig = CameraFaultRig()
+    rig.step()
+    assert rig.CI.CS.camera_fault_soft
+    for _ in range(CAM_LKAS_STALE_FRAMES - 1):
+      rig.step(cam=False)
+      assert rig.CI.CS.camera_fault_soft
+    ret = rig.step(cam=False)
+    assert ret.steerFaultPermanent
+    assert not rig.CI.CS.camera_fault_soft
 
 
 class TestLkasRearm:

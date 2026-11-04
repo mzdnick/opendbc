@@ -153,9 +153,13 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
 
     can_sends.extend(self.update_hud(CC, CC_SP, CS))
 
-    # send steering command
+    # The EPS reads LKAS health from our 0x243, so drop the camera's error bits while steering;
+    # carstate restores the fault if the EPS shows one anyway.
+    steer_cam = CS.cam_lkas
+    if CC.latActive:
+      steer_cam = {**CS.cam_lkas, "ERR_BIT_1": 0, "ERR_BIT_2": 0}
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
-                                                      self.frame, apply_torque, CS.cam_lkas))
+                                                      self.frame, apply_torque, steer_cam))
 
     # Suppress ICBM while cancel/resume is active or the MRCC cleanup owns CRZ_BTNS:
     # the wheel's press pattern owns the counter stream until release.

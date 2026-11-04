@@ -18,7 +18,7 @@ from opendbc.car import DT_CTRL
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.mazda.tests.conftest import CAM_LKAS, LongCtrlState, car_controller, car_params, controller_params, eps_fw, frame, \
-  mazda_car_state, step
+  mazda_car_state, parse_frame, step
 from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaSafetyFlags
 from opendbc.car.structs import CarParams
 from opendbc.safety.tests.libsafety import libsafety_py
@@ -199,6 +199,24 @@ def test_carstate_undelivered_latch_zeroes_the_steer_command(stock_cc, stock_cs)
   # the latch clearing walks the command back up from zero at STEER_DELTA_UP
   step(stock_cc, stock_cs, steer_undelivered=False, **lat)
   assert stock_cc.apply_torque_last == stock_cc.params.STEER_DELTA_UP
+
+
+def test_camera_error_bits_leave_the_command_while_steering(stock_cc, stock_cs):
+  # The EPS reads LKAS health from our 0x243 (the panda blocks the camera's own), so the camera's
+  # error bits told it to stop assisting while we steered (000000b3 seg 46: LKAS_BLOCK 80 ms
+  # after the glare bits). Drop them while lateral is active; mirror everything otherwise.
+  stock_cs.cam_lkas.update({"BIT_1": 1, "ERR_BIT_1": 1, "ERR_BIT_2": 1})
+  lat = dict(long_active=False, enabled=True, v_ego=10.)
+  _, sends = step(stock_cc, stock_cs, lat_active=True, torque=0., **lat)
+  v = parse_frame(CAM_LKAS, frame(sends, CAM_LKAS))
+  assert v["BIT_1"] == 1
+  assert v["ERR_BIT_1"] == 0
+  assert v["ERR_BIT_2"] == 0
+  _, sends = step(stock_cc, stock_cs, lat_active=False, torque=0., **lat)
+  v = parse_frame(CAM_LKAS, frame(sends, CAM_LKAS))
+  assert v["BIT_1"] == 1
+  assert v["ERR_BIT_1"] == 1
+  assert v["ERR_BIT_2"] == 1
 
 
 class TestRejectionRecovery:

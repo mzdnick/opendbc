@@ -1,6 +1,5 @@
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, DT_CTRL, create_button_events, structs, uds
-from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 from opendbc.car.mazda.radar_session import RadarSessionManager
@@ -18,8 +17,6 @@ STOCK_RADAR_ACK_GUARD_FRAMES = round(CarControllerParams.STOCK_RADAR_ACK_GUARD_T
 CAM_LANEINFO_FRESH_FRAMES = int(CarControllerParams.CAM_LANEINFO_FRESH_T / DT_CTRL)
 LKAS_REARM_FRAMES = round(CarControllerParams.LKAS_REARM_T / DT_CTRL)
 LKAS_REARM_FAULT_FRAMES = round(CarControllerParams.LKAS_REARM_FAULT_T / DT_CTRL)
-# Eight camera periods of silence is a dead camera, not glare.
-CAM_LKAS_STALE_FRAMES = round(0.5 / DT_CTRL)
 # Bus witnesses: vehicle messages whose silence means the bus is gone, not the radar, over the
 # CANParser's own ten-period validity window. {message: (signal, fresh frames)}
 MAIN_CAN_WITNESSES = {"PEDALS": ("ACC_ACTIVE", round(0.2 / DT_CTRL)), "ENGINE_DATA": ("SPEED", round(0.1 / DT_CTRL))}
@@ -66,8 +63,6 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # CAM_SETTINGS intervention bits: the car's own lane-keep setting. The EPS applies nothing while
     # it is off (docs/zoompilot/mazda-lateral.md, "The car's own lane keep switched off").
     self.lkas_setting_on = True
-    self.camera_fault_soft = False  # steering through the camera's ERR_BIT_1; logged on every edge
-    self.cam_lkas_stale_frames = 0  # frames since the camera's last 0x243
     # Last frame's invalidLkasSetting: with the setting off the EPS applies nothing by design,
     # so the non-delivery latch has nothing to measure and must not hold or alert.
     self.lkas_setting_invalid = False
@@ -345,7 +340,7 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # Stock LKAS must be switched on: the EPS applies no LKAS torque otherwise. Off is LANE_LINES 0
     # (the LAS switch) or both CAM_SETTINGS intervention bits clear; a car that never sends
     # CAM_SETTINGS reads on (docs/zoompilot/mazda-lateral.md). A faulted camera also sends LANE_LINES 0,
-    # with its error bits set; that is the camera fault (steerFaultPermanent), not the switch.
+    # with its error bits set; that is the camera fault, not the switch.
     if len(cp_cam.vl_all["CAM_SETTINGS"]["LKAS_INERVENTION_ON1"]) > 0:
       self.lkas_setting_on = any(cp_cam.vl["CAM_SETTINGS"][s] for s in ("LKAS_INERVENTION_ON1", "ILKAS_NTERVENTION_ON2"))
     camera_faulted = cp_cam.vl["CAM_LANEINFO"]["ERR_BIT"] == 1 or cp_cam.vl["CAM_LKAS"]["ERR_BIT_1"] == 1
@@ -382,23 +377,10 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # camera signals
     self.cam_lkas = cp_cam.vl["CAM_LKAS"]
     self.cam_laneinfo = cp_cam.vl["CAM_LANEINFO"]
-    # ERR_BIT_1 alone is the camera's own transient (sun glare); every corpus fault with it
-    # followed an EPS LKAS_FAULT. Soften unless the EPS corroborates or the camera goes
-    # silent. A block from a stop is the EPS's standby, not a fault
-    # (docs/zoompilot/mazda-lateral.md); None (untracked) stays trusted.
-    camera_fault = cp_cam.vl["CAM_LKAS"]["ERR_BIT_1"] == 1
-    fresh = len(cp_cam.vl_all["CAM_LKAS"]["ERR_BIT_1"]) > 0
-    self.cam_lkas_stale_frames = 0 if fresh else self.cam_lkas_stale_frames + 1
-    eps_fault = cp.vl["STEER_RATE"]["LKAS_FAULT"] == 1
-    origin = self.lkas_block_origin_speed
-    fault_block = self.lkas_blocked and (origin is None or origin >= self.params.STEER_UNDELIVERED_ALERT_ORIGIN_SPEED)
-    soft = camera_fault and self.cam_lkas_stale_frames < CAM_LKAS_STALE_FRAMES and not eps_fault and not fault_block
-    if soft != self.camera_fault_soft:
-      carlog.warning({"event": "mazdaCameraFaultSoft", "soft": soft, "cameraFault": camera_fault,
-                      "epsFault": eps_fault, "epsBlocked": self.lkas_blocked,
-                      "blockOriginSpeed": self.lkas_block_origin_speed})
-      self.camera_fault_soft = soft
-    ret.steerFaultPermanent = camera_fault and not soft
+    # The EPS's own fault. The camera's ERR_BIT_1 latches about 5 s after it on every real fault, and
+    # alone it is a transient (sun glare) the carcontroller keeps from the EPS
+    # (docs/zoompilot/mazda-lateral.md, "LKAS_FAULT and the camera's ERR_BIT_1").
+    ret.steerFaultPermanent = cp.vl["STEER_RATE"]["LKAS_FAULT"] == 1
     self.hbc_request = cam_laneinfo_fresh and self.cam_laneinfo["BIT2"] == 1
 
     # Decode distance, set-speed, resume, cancel, and main-button events.

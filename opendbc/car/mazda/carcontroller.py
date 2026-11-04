@@ -153,11 +153,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
 
     can_sends.extend(self.update_hud(CC, CC_SP, CS))
 
-    # The EPS reads LKAS health from our 0x243, so drop the camera's error bits while steering;
-    # carstate restores the fault if the EPS shows one anyway.
-    steer_cam = CS.cam_lkas
-    if CC.latActive:
-      steer_cam = {**CS.cam_lkas, "ERR_BIT_1": 0, "ERR_BIT_2": 0}
+    # The EPS reads LKAS health from this frame, and the panda only passes it while it blocks the
+    # camera's own. Never forward the camera's error bits (sun glare): the EPS would stop assisting.
+    # carstate takes the permanent fault from the EPS's LKAS_FAULT instead.
+    steer_cam = {**CS.cam_lkas, "ERR_BIT_1": 0, "ERR_BIT_2": 0}
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
                                                       self.frame, apply_torque, steer_cam))
 
